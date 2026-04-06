@@ -1508,7 +1508,7 @@ mark.highlight {
   </div>
 
   <div class="sidebar-footer">
-    <span class="sidebar-version">Kennisbank BAVPOL · v4.0</span>
+    <span class="sidebar-version">Kennisbank BAVPOL · v5.0</span>
   </div>
 </nav>
 
@@ -1817,7 +1817,7 @@ const CFG = {
   STORAGE_KEY: 'bavpol_kennisbank_v2',
   STORAGE_VERSION: 2,
   LEGACY_KEY: 'bavpol_kennisbank_v1',
-  MAX_CONTENT_CHARS: 80000,
+  MAX_CONTENT_CHARS: 5000000,  // 5MB tekst — geen praktische limiet voor volledige documenten
   MAX_PREVIEW_CHARS: 350,
   SNIPPET_CONTEXT: 120,
   SNIPPET_LENGTH: 280,
@@ -1924,7 +1924,7 @@ const Storage = {
         parsedAt: Date.now(),
         searchable: !!(old.content && old.content.length > 10),
         parseStatus: (old.content && old.content.length > 10) ? 'done' : 'unsupported',
-        content: (old.content || '').slice(0, CFG.MAX_CONTENT_CHARS),
+        content: (old.content || ''),            // GEEN truncatie
         contentPreview: old.preview || (old.content || '').slice(0, CFG.MAX_PREVIEW_CHARS),
         pageMap: [],
         metadata: {},
@@ -1955,7 +1955,7 @@ const Storage = {
       searchable: d.searchable === true,
       parseStatus: d.parseStatus || 'pending',
       parseError: d.parseError || null,
-      content: (d.content || '').slice(0, CFG.MAX_CONTENT_CHARS),
+      content: (d.content || ''),           // GEEN truncatie bij laden
       contentPreview: d.contentPreview || (d.content || '').slice(0, CFG.MAX_PREVIEW_CHARS),
       pageMap: Array.isArray(d.pageMap) ? d.pageMap : [],
       metadata: d.metadata || {},
@@ -2036,11 +2036,14 @@ const Parser = {
   async parseTxt(file, doc) {
     try {
       const text = await Util.readFileAsText(file);
-      doc.content = text.slice(0, CFG.MAX_CONTENT_CHARS);
+      // GEEN truncatie — sla volledige tekst op
+      doc.content = text;
       doc.contentPreview = Util.makePreview(text);
       doc.searchable = doc.content.length > 0;
       doc.parseStatus = 'done';
       doc.parsedAt = Date.now();
+      doc.metadata.contentLength = text.length;
+      console.info(`[Parser] TXT "${doc.title}": ${(text.length/1000).toFixed(1)}K tekens`);
     } catch(e) {
       doc.parseStatus = 'error';
       doc.parseError = e.message;
@@ -2051,42 +2054,57 @@ const Parser = {
 
   async parsePdf(file, doc) {
     if (!State.libs.pdfjs) {
-      // Fallback to raw extraction if pdf.js unavailable
       return Parser.parsePdfFallback(file, doc);
     }
     try {
       const arrayBuffer = await file.arrayBuffer();
-      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+      const pdf = await loadingTask.promise;
       const numPages = pdf.numPages;
       const pageMap = [];
       const parts = [];
       let offset = 0;
+      let totalChars = 0;
 
+      console.info(`[Parser] PDF "${doc.title}": ${numPages} pagina's starten...`);
+
+      // Verwerk ALLE pagina's — geen limiet
       for (let i = 1; i <= numPages; i++) {
-        const page = await pdf.getPage(i);
-        const tc = await page.getTextContent();
-        const pageText = tc.items
-          .filter(item => typeof item.str === 'string')
-          .map(item => item.str)
-          .join(' ')
-          .replace(/\s{2,}/g, ' ')
-          .trim();
+        try {
+          const page = await pdf.getPage(i);
+          const tc = await page.getTextContent({ normalizeWhitespace: true });
+          const pageText = tc.items
+            .filter(item => typeof item.str === 'string')
+            .map(item => item.str)
+            .join(' ')
+            .replace(/\s{2,}/g, ' ')
+            .trim();
 
-        if (pageText.length > 0) {
-          pageMap.push({ page: i, offset, length: pageText.length });
-          offset += pageText.length + 2;
-          parts.push(pageText);
+          if (pageText.length > 0) {
+            pageMap.push({ page: i, offset, length: pageText.length });
+            offset += pageText.length + 2;
+            parts.push(pageText);
+            totalChars += pageText.length;
+          }
+        } catch(pageErr) {
+          console.warn(`[Parser] PDF pagina ${i} fout:`, pageErr.message);
+          // Doorgaan met volgende pagina — geen stop
         }
       }
 
       const fullText = parts.join('\n\n');
-      doc.content = fullText.slice(0, CFG.MAX_CONTENT_CHARS);
+      // GEEN truncatie — sla volledige tekst op
+      doc.content = fullText;
       doc.contentPreview = Util.makePreview(fullText);
       doc.pageMap = pageMap;
       doc.searchable = doc.content.length > 10;
       doc.parseStatus = 'done';
       doc.parsedAt = Date.now();
       doc.metadata.pageCount = numPages;
+      doc.metadata.pagesProcessed = parts.length;
+      doc.metadata.contentLength = totalChars;
+
+      console.info(`[Parser] PDF "${doc.title}" klaar: ${numPages} pagina's, ${(totalChars/1000).toFixed(1)}K tekens`);
     } catch(e) {
       console.error('pdf.js parse error', e);
       doc.parseStatus = 'error';
@@ -2097,19 +2115,21 @@ const Parser = {
   },
 
   async parsePdfFallback(file, doc) {
-    // Best-effort without pdf.js
+    // Best-effort zonder pdf.js — verwerk ALLE bytes
     try {
       const buffer = await file.arrayBuffer();
       const bytes = new Uint8Array(buffer);
-      // Extract ASCII printable from BT/ET blocks
+      // GEEN byte-limiet — verwerk volledig bestand
+      const len = bytes.length;
+      console.info(`[Parser] PDF fallback "${doc.title}": ${(len/1024).toFixed(0)}KB verwerken...`);
+
       let raw = '';
-      const len = Math.min(bytes.length, 500000);
-      for (let i = 0; i < len; i++) {
-        const b = bytes[i];
-        raw += (b >= 32 && b < 127) ? String.fromCharCode(b) : ' ';
-      }
+      // Gebruik Uint8Array direct zonder string-concatenatie voor performance
+      const decoder = new TextDecoder('latin1');
+      raw = decoder.decode(bytes);
+
       const parts = [];
-      const btEt = /BT([\s\S]{0,2000}?)ET/g;
+      const btEt = /BT([\s\S]{0,3000}?)ET/g;
       let m;
       while ((m = btEt.exec(raw)) !== null) {
         const chunk = m[1]
@@ -2121,12 +2141,14 @@ const Parser = {
       }
       const text = parts.join('\n').replace(/\s{3,}/g, '  ').trim();
       if (text.length > 30) {
-        doc.content = text.slice(0, CFG.MAX_CONTENT_CHARS);
+        doc.content = text; // GEEN truncatie
         doc.contentPreview = Util.makePreview(text);
         doc.searchable = true;
         doc.parseStatus = 'done';
         doc.parsedAt = Date.now();
         doc.metadata.fallbackParsed = true;
+        doc.metadata.contentLength = text.length;
+        console.info(`[Parser] PDF fallback "${doc.title}" klaar: ${(text.length/1000).toFixed(1)}K tekens`);
       } else {
         doc.parseStatus = 'error';
         doc.parseError = 'PDF tekst kon niet worden geëxtraheerd (versleuteld of gescand?).';
@@ -2152,11 +2174,14 @@ const Parser = {
         console.info('mammoth messages:', result.messages);
       }
       if (text.length > 0) {
-        doc.content = text.slice(0, CFG.MAX_CONTENT_CHARS);
+        // GEEN truncatie — sla volledige tekst op
+        doc.content = text;
         doc.contentPreview = Util.makePreview(text);
         doc.searchable = true;
         doc.parseStatus = 'done';
         doc.parsedAt = Date.now();
+        doc.metadata.contentLength = text.length;
+        console.info(`[Parser] DOCX "${doc.title}": ${(text.length/1000).toFixed(1)}K tekens`);
       } else {
         doc.parseStatus = 'error';
         doc.parseError = 'Geen leesbare tekst gevonden in dit Word document.';
@@ -2172,7 +2197,6 @@ const Parser = {
   },
 
   async parseDocxFallback(file, doc) {
-    // ZIP-based raw XML extraction without mammoth
     try {
       const buffer = await file.arrayBuffer();
       const bytes = new Uint8Array(buffer);
@@ -2193,12 +2217,15 @@ const Parser = {
         .replace(/\n{3,}/g, '\n\n')
         .trim();
       if (text.length > 20) {
-        doc.content = text.slice(0, CFG.MAX_CONTENT_CHARS);
+        // GEEN truncatie
+        doc.content = text;
         doc.contentPreview = Util.makePreview(text);
         doc.searchable = true;
         doc.parseStatus = 'done';
         doc.parsedAt = Date.now();
         doc.metadata.fallbackParsed = true;
+        doc.metadata.contentLength = text.length;
+        console.info(`[Parser] DOCX fallback "${doc.title}": ${(text.length/1000).toFixed(1)}K tekens`);
       } else {
         throw new Error('onvoldoende tekst geëxtraheerd');
       }
@@ -2508,8 +2535,8 @@ const LawParser = {
    ---------------------------------------------------------- */
 const ChunkEngine = {
   MIN_CHUNK: 40,      // minimale chunk lengte
-  MAX_CHUNK: 1200,    // maximale chunk lengte
-  MAX_CHUNKS: 300,    // veiligheidsgrens per document
+  MAX_CHUNK: 1200,    // maximale chunk lengte per chunk
+  MAX_CHUNKS: 99999,  // geen praktische limiet — verwerk ALLES
 
   // Bouw chunks voor een document (lazy, gecached)
   build(doc) {
@@ -2521,6 +2548,11 @@ const ChunkEngine = {
 
     try {
       doc._chunks = ChunkEngine._split(doc);
+      // FASE 2: log statistieken naar console
+      console.info(`[Parser] "${doc.title}": ${(doc.content.length/1000).toFixed(1)}K tekens, ${doc._chunks.length} chunks, parseStatus=${doc.parseStatus}`);
+      // Sla statistieken op in metadata voor UI-weergave
+      doc.metadata.chunkCount = doc._chunks.length;
+      doc.metadata.contentLength = doc.content.length;
     } catch(e) {
       console.warn('ChunkEngine error voor', doc.title, e);
       doc._chunks = [];
@@ -2532,32 +2564,49 @@ const ChunkEngine = {
     const chunks = [];
 
     // Strategie: splits op dubbele newlines (alinea's / secties)
-    // val terug op enkele newlines als nodig
     const rawBlocks = content.split(/\n{2,}/);
     let chunkIdx = 0;
+    let charOffset = 0; // track echte positie in document (FIX: geen indexOf meer)
 
-    for (let bi = 0; bi < rawBlocks.length && chunkIdx < ChunkEngine.MAX_CHUNKS; bi++) {
+    // Bouw een offset-map per blok op basis van split posities
+    // Zodat we altijd de JUISTE positie hebben, ook bij herhalende tekst
+    let searchPos = 0;
+    const blockOffsets = rawBlocks.map(block => {
+      const idx = content.indexOf(block, searchPos);
+      if (idx >= 0) { searchPos = idx + block.length; return idx; }
+      return searchPos;
+    });
+
+    for (let bi = 0; bi < rawBlocks.length; bi++) {
       const block = rawBlocks[bi].trim();
+      const blockOffset = blockOffsets[bi] >= 0 ? blockOffsets[bi] : 0;
+
       if (block.length < ChunkEngine.MIN_CHUNK) continue;
 
       // Als blok te groot is, splits op enkele newline
       if (block.length > ChunkEngine.MAX_CHUNK) {
         const lines = block.split(/\n/);
         let buf = '';
+        let bufOffset = blockOffset;
+        let linePos = blockOffset;
+
         for (const line of lines) {
-          if ((buf + '\n' + line).length > ChunkEngine.MAX_CHUNK && buf.length >= ChunkEngine.MIN_CHUNK) {
-            chunks.push(ChunkEngine._makeChunk(doc, buf.trim(), chunkIdx++, content.indexOf(buf)));
+          const combined = buf ? buf + '\n' + line : line;
+          if (combined.length > ChunkEngine.MAX_CHUNK && buf.length >= ChunkEngine.MIN_CHUNK) {
+            chunks.push(ChunkEngine._makeChunk(doc, buf.trim(), chunkIdx++, bufOffset));
+            bufOffset = linePos;
             buf = line;
           } else {
-            buf = buf ? buf + '\n' + line : line;
+            if (!buf) bufOffset = linePos;
+            buf = combined;
           }
+          linePos += line.length + 1; // +1 voor newline
         }
         if (buf.trim().length >= ChunkEngine.MIN_CHUNK) {
-          chunks.push(ChunkEngine._makeChunk(doc, buf.trim(), chunkIdx++, content.indexOf(buf)));
+          chunks.push(ChunkEngine._makeChunk(doc, buf.trim(), chunkIdx++, bufOffset));
         }
       } else {
-        const offset = content.indexOf(block);
-        chunks.push(ChunkEngine._makeChunk(doc, block, chunkIdx++, offset));
+        chunks.push(ChunkEngine._makeChunk(doc, block, chunkIdx++, blockOffset));
       }
     }
 
@@ -2565,9 +2614,7 @@ const ChunkEngine = {
   },
 
   _makeChunk(doc, text, idx, offset) {
-    // Fase E: detecteer artikel-hint
     const artHint = ChunkEngine._detectArticleHint(text);
-    // Detecteer mogelijke koptekst (eerste regel als die kort is)
     const firstLine = text.split('\n')[0].trim();
     const heading = firstLine.length < 80 ? firstLine : '';
 
@@ -2578,11 +2625,10 @@ const ChunkEngine = {
       textLower: text.toLowerCase(),
       heading,
       offset: offset >= 0 ? offset : 0,
-      artHint,       // bijv. "Artikel 9" of "Art. 52"
+      artHint,
     };
   },
 
-  // Fase E: zoek artikel-hints in een tekstblok
   _detectArticleHint(text) {
     const m = text.match(/\b(art(?:ikel)?\.?\s+\d+(?:[a-z])?(?:\.\d+)*(?:\s+[A-Z][a-z]{0,5})?)\b/i);
     return m ? m[1].trim() : null;
@@ -3117,8 +3163,12 @@ const Render = {
       const pages = doc.metadata.pageCount ? ` · ${doc.metadata.pageCount} pagina's` : '';
       const artInfo = hasArticles ? ` · ${doc.articles.length} artikelen` : '';
       const fallback = doc.metadata.fallbackParsed ? ' (basis-extractie)' : '';
+      const chars = doc.metadata.contentLength
+        ? ` · ${(doc.metadata.contentLength/1000).toFixed(1)}K tekens`
+        : doc.content ? ` · ${(doc.content.length/1000).toFixed(1)}K tekens` : '';
+      const chunks = doc.metadata.chunkCount ? ` · ${doc.metadata.chunkCount} chunks` : '';
       banner.className = 'modal-parse-banner searchable';
-      banner.innerHTML = `<span>✓</span><span>Inhoud doorzoekbaar${pages}${artInfo}${fallback}</span>`;
+      banner.innerHTML = `<span>✓</span><span>Volledig ingelezen${pages}${chars}${artInfo}${chunks}${fallback}</span>`;
     } else if (doc.parseStatus === 'unsupported') {
       banner.className = 'modal-parse-banner not-searchable';
       banner.innerHTML = `<span>◐</span><span>${Util.esc(doc.parseError || 'Dit bestandstype is momenteel niet doorzoekbaar.')}</span>`;
