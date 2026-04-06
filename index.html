@@ -1377,8 +1377,39 @@ mark.highlight {
   font-weight: 400;
 }
 
-/* Search result article annotation */
-.search-art-found {
+/* Search result chunk heading */
+.chunk-heading {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--navy-700);
+  background: rgba(20,45,88,0.05);
+  border-left: 2px solid var(--navy-600);
+  padding: 2px 7px;
+  border-radius: 0 3px 3px 0;
+  margin-top: -4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-style: italic;
+}
+
+/* Chunk artikel-hint badge */
+.chunk-art-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(201,168,76,0.12);
+  color: #7c5a10;
+  border: 1px solid rgba(201,168,76,0.25);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -1477,7 +1508,7 @@ mark.highlight {
   </div>
 
   <div class="sidebar-footer">
-    <span class="sidebar-version">Kennisbank BAVPOL · v3.0</span>
+    <span class="sidebar-version">Kennisbank BAVPOL · v4.0</span>
   </div>
 </nav>
 
@@ -2462,35 +2493,176 @@ const LawParser = {
 };
 
 
+/* ============================================================
+   SECTION 6: HYBRIDE ZOEKSYSTEEM v4
+   Fase A: Chunking  |  Fase B: Hybride matching
+   Fase C: Reranking |  Fase D: Slimme snippets
+   Fase E: Juridische metadata
+   ============================================================ */
+
+/* ----------------------------------------------------------
+   FASE A — CHUNK ENGINE
+   Splits document content in semantische blokken:
+   alinea's, secties, artikel-blokken.
+   Resultaat: Chunk[] gecached op doc._chunks
+   ---------------------------------------------------------- */
+const ChunkEngine = {
+  MIN_CHUNK: 40,      // minimale chunk lengte
+  MAX_CHUNK: 1200,    // maximale chunk lengte
+  MAX_CHUNKS: 300,    // veiligheidsgrens per document
+
+  // Bouw chunks voor een document (lazy, gecached)
+  build(doc) {
+    if (!doc || !doc.content || doc.content.length < ChunkEngine.MIN_CHUNK) {
+      doc._chunks = [];
+      return;
+    }
+    if (doc._chunks && doc._chunks.length > 0) return; // al gebouwd
+
+    try {
+      doc._chunks = ChunkEngine._split(doc);
+    } catch(e) {
+      console.warn('ChunkEngine error voor', doc.title, e);
+      doc._chunks = [];
+    }
+  },
+
+  _split(doc) {
+    const content = doc.content;
+    const chunks = [];
+
+    // Strategie: splits op dubbele newlines (alinea's / secties)
+    // val terug op enkele newlines als nodig
+    const rawBlocks = content.split(/\n{2,}/);
+    let chunkIdx = 0;
+
+    for (let bi = 0; bi < rawBlocks.length && chunkIdx < ChunkEngine.MAX_CHUNKS; bi++) {
+      const block = rawBlocks[bi].trim();
+      if (block.length < ChunkEngine.MIN_CHUNK) continue;
+
+      // Als blok te groot is, splits op enkele newline
+      if (block.length > ChunkEngine.MAX_CHUNK) {
+        const lines = block.split(/\n/);
+        let buf = '';
+        for (const line of lines) {
+          if ((buf + '\n' + line).length > ChunkEngine.MAX_CHUNK && buf.length >= ChunkEngine.MIN_CHUNK) {
+            chunks.push(ChunkEngine._makeChunk(doc, buf.trim(), chunkIdx++, content.indexOf(buf)));
+            buf = line;
+          } else {
+            buf = buf ? buf + '\n' + line : line;
+          }
+        }
+        if (buf.trim().length >= ChunkEngine.MIN_CHUNK) {
+          chunks.push(ChunkEngine._makeChunk(doc, buf.trim(), chunkIdx++, content.indexOf(buf)));
+        }
+      } else {
+        const offset = content.indexOf(block);
+        chunks.push(ChunkEngine._makeChunk(doc, block, chunkIdx++, offset));
+      }
+    }
+
+    return chunks;
+  },
+
+  _makeChunk(doc, text, idx, offset) {
+    // Fase E: detecteer artikel-hint
+    const artHint = ChunkEngine._detectArticleHint(text);
+    // Detecteer mogelijke koptekst (eerste regel als die kort is)
+    const firstLine = text.split('\n')[0].trim();
+    const heading = firstLine.length < 80 ? firstLine : '';
+
+    return {
+      docId: doc.id,
+      idx,
+      text,
+      textLower: text.toLowerCase(),
+      heading,
+      offset: offset >= 0 ? offset : 0,
+      artHint,       // bijv. "Artikel 9" of "Art. 52"
+    };
+  },
+
+  // Fase E: zoek artikel-hints in een tekstblok
+  _detectArticleHint(text) {
+    const m = text.match(/\b(art(?:ikel)?\.?\s+\d+(?:[a-z])?(?:\.\d+)*(?:\s+[A-Z][a-z]{0,5})?)\b/i);
+    return m ? m[1].trim() : null;
+  },
+};
+
+/* ----------------------------------------------------------
+   FASE B+C+D+E — HYBRIDE SEARCH ENGINE
+   ---------------------------------------------------------- */
 const Search = {
 
-  // Build a scored result list — article-aware
+  // Scores (tunable constants)
+  W: {
+    EXACT_PHRASE_DOC:   300,  // exacte frase in heel document
+    EXACT_PHRASE_CHUNK: 250,  // exacte frase in chunk
+    TITLE_EXACT:         80,  // zoekopdracht == volledige titel
+    TITLE_PHRASE:        70,  // exacte frase in titel
+    TITLE_TOKEN:         40,  // losse token in titel
+    FILENAME_TOKEN:      15,  // token in bestandsnaam
+    ART_QUERY_MATCH:    200,  // artikelnummer-zoekopdracht gevonden
+    ART_TITLE_TOKEN:     60,  // token in artikel-titel
+    CHUNK_EXACT:        180,  // exacte frase in chunk
+    CHUNK_ALL_TOKENS:    80,  // alle tokens in één chunk
+    CHUNK_TOKEN:         12,  // token in chunk
+    ART_HINT_BONUS:      25,  // chunk heeft artikel-hint
+    PROXIMITY_BONUS:     40,  // tokens dicht bij elkaar in chunk
+    EARLY_MATCH_BONUS:   20,  // match vroeg in chunk
+    TITLE_AND_CONTENT:   30,  // match in zowel titel als inhoud
+    CATEGORY_WETGEVING:  10,  // wetgeving bij juridische query
+  },
+
+  // Hoofd-query functie
   query(queryStr, filter) {
     if (!queryStr || queryStr.trim().length === 0) return [];
 
-    const words = queryStr.trim().toLowerCase().split(/\s+/).filter(w => w.length > 0);
-    let pool = filter === 'alle' ? State.documents : State.documents.filter(d => d.category === filter);
+    const q = queryStr.trim();
+    const qLower = q.toLowerCase();
+    const tokens = qLower.split(/\s+/).filter(w => w.length > 1);
+    if (tokens.length === 0) return [];
 
-    // Check if query looks like an article reference
-    const artQuery = LawParser.parseArticleQuery(queryStr.trim());
+    const isMultiWord = tokens.length > 1;
+    const isJuridisch = Search._isJuridischeQuery(qLower);
+    const artQuery = LawParser.parseArticleQuery(q);
+
+    let pool = filter === 'alle'
+      ? State.documents
+      : State.documents.filter(d => d.category === filter);
 
     const results = [];
 
     for (const doc of pool) {
-      // Lazy-parse articles if not yet done
-      if (doc.searchable && doc.content && !doc.articles) {
-        LawParser.parse(doc);
-      }
+      // Zorg dat articles en chunks beschikbaar zijn
+      if (doc.searchable && doc.content && !doc.articles) LawParser.parse(doc);
+      if (doc.searchable && doc.content) ChunkEngine.build(doc);
 
       const titleLower = doc.title.toLowerCase();
       const filenameLower = (doc.originalFileName || '').toLowerCase();
       const contentLower = (doc.content || '').toLowerCase();
 
       let score = 0;
-      let bestSnippetOffset = -1;
+      let bestChunk = null;
       let articleMatch = null;
+      let titleHit = false;
 
-      // --- ARTICLE QUERY BOOST ---
+      // --- A: EXACTE FRASE IN TITEL ---
+      if (titleLower === qLower) { score += Search.W.TITLE_EXACT; titleHit = true; }
+      else if (titleLower.includes(qLower)) { score += Search.W.TITLE_PHRASE; titleHit = true; }
+
+      // --- B: LOSSE TOKENS IN TITEL ---
+      let titleTokenHits = 0;
+      for (const tok of tokens) {
+        if (titleLower.includes(tok)) { score += Search.W.TITLE_TOKEN; titleTokenHits++; titleHit = true; }
+      }
+
+      // --- C: BESTANDSNAAM ---
+      for (const tok of tokens) {
+        if (filenameLower.includes(tok)) score += Search.W.FILENAME_TOKEN;
+      }
+
+      // --- D: ARTIKEL-ZOEKOPDRACHT ---
       if (artQuery && doc.articles && doc.articles.length > 0) {
         const matchedArt = doc.articles.find(a => {
           const numMatch = a.num.toLowerCase() === artQuery.num.toLowerCase();
@@ -2498,49 +2670,186 @@ const Search = {
           return numMatch && lawMatch;
         });
         if (matchedArt) {
-          score += 200;
+          score += Search.W.ART_QUERY_MATCH;
           articleMatch = matchedArt;
-          bestSnippetOffset = matchedArt.startIndex;
         }
       }
 
-      for (const word of words) {
-        if (titleLower.includes(word)) {
-          score += 40;
-          if (titleLower === word) score += 20;
-        }
-        if (filenameLower.includes(word)) score += 15;
-        if (doc.searchable && contentLower.length > 0) {
-          let idx = contentLower.indexOf(word);
-          let occurrences = 0;
-          while (idx !== -1 && occurrences < 10) {
-            score += 5;
-            occurrences++;
-            if (bestSnippetOffset === -1) bestSnippetOffset = idx;
-            idx = contentLower.indexOf(word, idx + 1);
-          }
-        }
-        // Article title match boost
-        if (doc.articles) {
-          for (const art of doc.articles) {
-            if (art.title.toLowerCase().includes(word)) {
-              score += 60;
-              if (!articleMatch) { articleMatch = art; bestSnippetOffset = art.startIndex; }
+      // --- E: ARTIKEL-TITEL MATCHES ---
+      if (doc.articles) {
+        for (const art of doc.articles) {
+          const artTitleLow = art.title.toLowerCase();
+          for (const tok of tokens) {
+            if (artTitleLow.includes(tok)) {
+              score += Search.W.ART_TITLE_TOKEN;
+              if (!articleMatch) articleMatch = art;
             }
           }
         }
       }
 
+      // --- F: EXACTE FRASE IN DOCUMENT ---
+      if (doc.searchable && contentLower.includes(qLower)) {
+        score += Search.W.EXACT_PHRASE_DOC;
+      }
+
+      // --- G: CHUNK-NIVEAU SCORING ---
+      if (doc._chunks && doc._chunks.length > 0) {
+        let bestChunkScore = 0;
+
+        for (const chunk of doc._chunks) {
+          let cs = 0;
+          const cLow = chunk.textLower;
+
+          // Exacte frase in chunk
+          if (cLow.includes(qLower)) {
+            cs += Search.W.CHUNK_EXACT;
+          }
+
+          // Alle tokens in chunk
+          const tokenHits = tokens.filter(t => cLow.includes(t));
+          if (tokenHits.length === tokens.length && tokens.length > 1) {
+            cs += Search.W.CHUNK_ALL_TOKENS;
+          }
+
+          // Per token score
+          for (const tok of tokens) {
+            if (cLow.includes(tok)) cs += Search.W.CHUNK_TOKEN;
+          }
+
+          // FASE C: PROXIMITY bonus — tokens dicht bij elkaar?
+          if (isMultiWord && tokenHits.length >= 2) {
+            const positions = tokenHits.map(t => cLow.indexOf(t)).filter(p => p >= 0);
+            if (positions.length >= 2) {
+              const span = Math.max(...positions) - Math.min(...positions);
+              if (span < 80) cs += Search.W.PROXIMITY_BONUS;
+              else if (span < 200) cs += Search.W.PROXIMITY_BONUS / 2;
+            }
+          }
+
+          // FASE C: Early match bonus
+          if (tokenHits.length > 0) {
+            const firstPos = Math.min(...tokenHits.map(t => cLow.indexOf(t)).filter(p => p >= 0));
+            if (firstPos < 100) cs += Search.W.EARLY_MATCH_BONUS;
+          }
+
+          // FASE E: Artikel-hint bonus
+          if (chunk.artHint && isJuridisch) cs += Search.W.ART_HINT_BONUS;
+
+          // Categorie bonus bij juridische query + wetgeving filter
+          if (isJuridisch && doc.category === 'wetgeving') cs += Search.W.CATEGORY_WETGEVING;
+
+          if (cs > bestChunkScore) {
+            bestChunkScore = cs;
+            bestChunk = chunk;
+          }
+        }
+
+        score += bestChunkScore;
+      }
+
+      // FASE C: Bonus voor match in zowel titel als inhoud
+      if (titleHit && (bestChunk || contentLower.length > 0)) {
+        score += Search.W.TITLE_AND_CONTENT;
+      }
+
       if (score > 0) {
-        const snippet = Search.buildSnippet(doc.content || '', bestSnippetOffset, words[0]);
-        results.push({ doc, score, snippet, articleMatch });
+        // FASE D: Bouw slim snippet
+        const snippet = Search._buildSmartSnippet(
+          doc, bestChunk, tokens, qLower, articleMatch
+        );
+        results.push({ doc, score, snippet, articleMatch, bestChunk });
       }
     }
 
+    // Sorteer op score
     results.sort((a, b) => b.score - a.score);
     return results;
   },
 
+  // FASE D — SLIMME SNIPPET BUILDER
+  // Pakt de meest relevante 1-2 zinnen rond de beste match
+  _buildSmartSnippet(doc, bestChunk, tokens, qLower, articleMatch) {
+    // Prioriteit 1: gebruik de best scorende chunk
+    let sourceText = '';
+    let matchOffset = -1;
+
+    if (bestChunk && bestChunk.text) {
+      sourceText = bestChunk.text;
+      // Zoek de eerste token in de chunk
+      for (const tok of tokens) {
+        const idx = bestChunk.textLower.indexOf(tok);
+        if (idx >= 0) { matchOffset = idx; break; }
+      }
+    } else if (articleMatch && articleMatch.content) {
+      sourceText = articleMatch.content;
+      matchOffset = 0;
+    } else if (doc.content) {
+      sourceText = doc.content;
+      for (const tok of tokens) {
+        const idx = (doc.content || '').toLowerCase().indexOf(tok);
+        if (idx >= 0) { matchOffset = idx; break; }
+      }
+    }
+
+    if (!sourceText) return doc.contentPreview || '';
+
+    // Knip zinnen rond de match
+    return Search._extractSentences(sourceText, matchOffset, tokens);
+  },
+
+  // Extraheer 1-3 relevante zinnen rond het matchpunt
+  _extractSentences(text, matchOffset, tokens) {
+    // Splits op zin-grenzen
+    const sentenceRe = /[^.!?\n]+[.!?\n]*/g;
+    const sentences = [];
+    let m;
+    while ((m = sentenceRe.exec(text)) !== null) {
+      sentences.push({ text: m[0].trim(), start: m.index, end: m.index + m[0].length });
+    }
+    if (sentences.length === 0) return Search._rawSnippet(text, matchOffset);
+
+    // Scoor zinnen op basis van token aanwezigheid
+    const scored = sentences.map(s => {
+      const sLow = s.text.toLowerCase();
+      let sc = 0;
+      for (const tok of tokens) { if (sLow.includes(tok)) sc += 10; }
+      // Bonus als match dichtbij is
+      if (matchOffset >= 0 && s.start <= matchOffset && s.end >= matchOffset) sc += 20;
+      return { ...s, sc };
+    });
+
+    // Pak de beste 1-2 zinnen (max 280 chars samen)
+    const sorted = [...scored].sort((a, b) => b.sc - a.sc);
+    const best = sorted.slice(0, 2);
+    // Herstel originele volgorde
+    best.sort((a, b) => a.start - b.start);
+
+    let snippet = best.map(s => s.text).join(' ').trim();
+    if (snippet.length > 280) snippet = snippet.slice(0, 277) + '…';
+    if (snippet.length < 20) snippet = Search._rawSnippet(text, matchOffset);
+
+    // Voeg ellipsis toe indien niet begin van tekst
+    const firstStart = best[0]?.start || 0;
+    if (firstStart > 50) snippet = '…' + snippet;
+
+    return snippet;
+  },
+
+  _rawSnippet(text, offset) {
+    const useOffset = offset <= 0 ? 0 : Math.max(0, offset - 80);
+    let snip = text.slice(useOffset, useOffset + 250).trim();
+    if (useOffset > 0) snip = '…' + snip;
+    if (useOffset + 250 < text.length) snip += '…';
+    return snip;
+  },
+
+  // Detecteer juridische zoekopdrachten
+  _isJuridischeQuery(qLower) {
+    return /\b(art(?:ikel)?|lid|wet|sv|awb|bes|straf|aanhouding|verdacht|politie|bevoegd|vergunning|handhav)\b/.test(qLower);
+  },
+
+  // Legacy buildSnippet (behoud voor niet-chunk paden)
   buildSnippet(content, offset, firstWord) {
     if (!content || content.length === 0) return '';
     const useOffset = offset === -1 ? 0 : Math.max(0, offset - CFG.SNIPPET_CONTEXT);
@@ -2723,29 +3032,42 @@ const Render = {
     const n = results.length;
     countEl.innerHTML = `<strong>${n}</strong> resultaat${n !== 1 ? 'en' : ''} voor "<strong>${Util.esc(queryStr)}</strong>"`;
 
-    grid.innerHTML = results.map(({ doc, score, snippet, articleMatch }) => {
+    grid.innerHTML = results.map(({ doc, score, snippet, articleMatch, bestChunk }) => {
       const badgeClass = Util.typeBadgeClass(doc.type);
       const cardClass = Util.typeCardClass(doc.type);
       const icon = Util.typeIcon(doc.type);
       const catClass = Util.catClass(doc.category);
       const catLabel = Util.catLabel(doc.category);
-      const words = queryStr.trim().toLowerCase().split(/\s+/);
-      const snippetHL = Render.highlightWords(Util.esc(snippet || doc.contentPreview || ''), words);
-      const titleHL = Render.highlightWords(Util.esc(doc.title), words);
+      const tokens = queryStr.trim().toLowerCase().split(/\s+/).filter(w => w.length > 1);
 
-      // Article match annotation
+      const snippetHL = Render.highlightWords(Util.esc(snippet || doc.contentPreview || ''), tokens);
+      const titleHL = Render.highlightWords(Util.esc(doc.title), tokens);
+
+      // Artikel-match annotatie
       const artAnnotation = articleMatch
         ? `<div class="search-art-found">⚖ ${Util.esc(articleMatch.title)} gevonden in dit document</div>`
+        : '';
+
+      // Fase E: artikel-hint uit beste chunk
+      const artHintBadge = (bestChunk && bestChunk.artHint && !articleMatch)
+        ? `<span class="chunk-art-hint" title="Chunk bevat artikelverwijzing">📌 ${Util.esc(bestChunk.artHint)}</span>`
+        : '';
+
+      // Koptekst van de chunk (indien beschikbaar en niet gelijk aan doc-titel)
+      const chunkHeading = (bestChunk && bestChunk.heading && bestChunk.heading !== doc.title && bestChunk.heading.length > 4)
+        ? `<div class="chunk-heading">${Util.esc(bestChunk.heading)}</div>`
         : '';
 
       return `<div class="doc-card ${cardClass}" data-docid="${Util.esc(doc.id)}"${articleMatch ? ` data-artid="${Util.esc(articleMatch.id)}"` : ''} role="article" tabindex="0">
         <div class="doc-card-header">
           <div class="doc-card-badges">
             <span class="doc-type-badge badge-${badgeClass}">${icon} ${doc.type.toUpperCase()}</span>
+            ${artHintBadge}
           </div>
           <span class="cat-tag ${catClass}">${catLabel}</span>
         </div>
         <div class="doc-card-title">${titleHL}</div>
+        ${chunkHeading}
         <div class="doc-card-preview">${snippetHL}</div>
         ${artAnnotation}
         <div class="doc-card-footer">
@@ -3126,6 +3448,11 @@ const Upload = {
         });
 
         await Parser.parse(item.file, doc);
+
+        // Bouw chunks direct na parsing (Fase A)
+        if (doc.searchable && doc.content) {
+          ChunkEngine.build(doc);
+        }
 
         clearInterval(timer);
         const el = progEl();
