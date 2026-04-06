@@ -1377,6 +1377,122 @@ mark.highlight {
   font-weight: 400;
 }
 
+/* ============================================================
+   ZOEKCONTEXT HIGHLIGHT — Modal search hit styling (v6)
+   ============================================================ */
+
+/* Zoekterm treffer in documenttekst */
+.search-hit {
+  background: rgba(251, 191, 36, 0.40);
+  border-radius: 2px;
+  padding: 0 2px;
+  font-weight: 600;
+  color: inherit;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.search-hit--active {
+  background: rgba(37, 99, 235, 0.25);
+  border-radius: 2px;
+  outline: 2px solid var(--blue-400);
+  outline-offset: 1px;
+  color: inherit;
+  font-weight: 700;
+}
+
+/* Modal zoeknavigatie balk */
+.modal-search-nav {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 20px;
+  background: var(--gray-50);
+  border-bottom: 1px solid var(--gray-200);
+  flex-wrap: wrap;
+  min-height: 42px;
+}
+.modal-search-nav-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--navy-700);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.modal-search-nav-term {
+  background: rgba(251,191,36,0.25);
+  border: 1px solid rgba(251,191,36,0.5);
+  color: var(--gray-700);
+  border-radius: 4px;
+  padding: 1px 7px;
+  font-size: 12px;
+  font-weight: 700;
+  font-style: italic;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.modal-search-nav-count {
+  font-size: 12px;
+  color: var(--gray-500);
+  font-weight: 400;
+  white-space: nowrap;
+}
+.modal-search-nav-count strong {
+  color: var(--navy-700);
+  font-weight: 700;
+}
+.modal-search-nav-btns {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+  align-items: center;
+}
+.modal-search-nav-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  border: 1.5px solid var(--gray-200);
+  background: var(--white);
+  cursor: pointer;
+  color: var(--gray-600);
+  font-size: 14px;
+  transition: var(--transition);
+  font-family: inherit;
+}
+.modal-search-nav-btn:not(:disabled):hover {
+  background: var(--navy-700);
+  border-color: var(--navy-700);
+  color: var(--white);
+}
+.modal-search-nav-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.modal-search-nav-source {
+  font-size: 10px;
+  color: var(--gray-400);
+  font-weight: 400;
+  white-space: nowrap;
+  letter-spacing: 0.3px;
+}
+.modal-search-nav-no-hits {
+  font-size: 11px;
+  color: var(--amber-soft);
+  font-weight: 500;
+}
+.modal-search-nav-not-searchable {
+  font-size: 11px;
+  color: var(--gray-400);
+  font-weight: 400;
+  font-style: italic;
+}
+
 /* Search result chunk heading */
 .chunk-heading {
   font-size: 11px;
@@ -1508,7 +1624,7 @@ mark.highlight {
   </div>
 
   <div class="sidebar-footer">
-    <span class="sidebar-version">Kennisbank BAVPOL · v5.0</span>
+    <span class="sidebar-version">Kennisbank BAVPOL · v6.0</span>
   </div>
 </nav>
 
@@ -1767,6 +1883,8 @@ mark.highlight {
     </div>
     <div id="modal-parse-banner"></div>
     <div id="modal-page-map"></div>
+    <!-- Zoeknavigatie balk (v6) — wordt gevuld door HighlightEngine -->
+    <div id="modal-search-nav-container"></div>
     <div class="modal-body" id="modal-body-container" style="padding:0;">
       <!-- Content rendered dynamically: law-layout (two-col) or plain content box -->
       <div id="modal-content-area" style="padding:0;"></div>
@@ -1841,6 +1959,13 @@ const State = {
   libs: {
     pdfjs: false,
     mammoth: false,
+  },
+  // Prioriteit 1: centrale zoekcontext
+  searchContext: {
+    query: '',            // volledige zoekopdracht als string
+    terms: [],            // genormaliseerde losse tokens
+    source: null,         // 'search-view' | 'topbar' | null
+    active: false,        // is er een actieve zoekopdracht?
   },
 };
 
@@ -2908,6 +3033,288 @@ const Search = {
 };
 
 /* ============================================================
+   SECTION 6b: SEARCH CONTEXT MANAGER (v6)
+   Beheert de actieve zoekopdracht centraal.
+   ============================================================ */
+const SearchContext = {
+
+  /**
+   * Sla een nieuwe zoekopdracht op in State.
+   * @param {string} query  - de volledige zoekstring
+   * @param {string} source - 'search-view' | 'topbar'
+   */
+  set(query, source) {
+    const q = (query || '').trim();
+    State.searchContext = {
+      query: q,
+      terms: SearchContext.tokenize(q),
+      source: source || null,
+      active: q.length > 0,
+    };
+  },
+
+  /** Reset de zoekcontext (bijv. bij navigatie weg van zoeken) */
+  reset() {
+    State.searchContext = { query: '', terms: [], source: null, active: false };
+  },
+
+  /** Splits zoekopdracht in genormaliseerde tokens (min 2 tekens) */
+  tokenize(query) {
+    if (!query) return [];
+    return query.trim().toLowerCase().split(/\s+/).filter(w => w.length >= 2);
+  },
+
+  /** Geeft aan of er een actieve, bruikbare zoekcontext is */
+  isActive() {
+    return State.searchContext.active && State.searchContext.terms.length > 0;
+  },
+};
+
+/* ============================================================
+   SECTION 6c: HIGHLIGHT ENGINE (v6)
+   Veilige, robuuste zoekterm-highlighting voor de modal.
+   Alle 9 prioriteiten van de zoekcontext-spec.
+   ============================================================ */
+const HighlightEngine = {
+
+  // Actieve hit-state voor navigatie
+  _hits: [],          // NodeList van .search-hit elementen in de modal
+  _activeIdx: -1,     // index van actieve treffer
+
+  /**
+   * Escape een string zodat hij veilig in een RegExp gebruikt kan worden.
+   */
+  escapeRegex(str) {
+    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  },
+
+  /**
+   * Bouw een veilige RegExp op basis van zoektermen.
+   * Ondersteunt meerdere termen (OR), case-insensitive.
+   * @returns {RegExp|null}
+   */
+  buildRegex(terms) {
+    if (!terms || terms.length === 0) return null;
+    try {
+      const pattern = terms.map(t => HighlightEngine.escapeRegex(t)).join('|');
+      return new RegExp(`(${pattern})`, 'gi');
+    } catch(e) {
+      console.warn('[HighlightEngine] Ongeldige regex:', e);
+      return null;
+    }
+  },
+
+  /**
+   * Highlight alle zoektermen in een plaintext-string.
+   * Werkt uitsluitend op safe-escaped HTML.
+   * Retourneert HTML-string met <mark class="search-hit"> elementen.
+   *
+   * @param {string} text   - de PLAIN text (niet pre-escaped HTML)
+   * @param {RegExp} regex  - de gecombineerde zoek-regex
+   * @returns {string}      - veilige HTML met highlights
+   */
+  highlightText(text, regex) {
+    if (!text || !regex) return Util.esc(text || '');
+    // Werk token voor token: escape HTML, dan highlight
+    // Splits de tekst op de regex, escape elk deel, wrap matches
+    const parts = text.split(regex);
+    return parts.map((part, i) => {
+      // Even indices = gewone tekst, oneven = matches (door capture group)
+      if (i % 2 === 1) {
+        // Dit is een match — wrap in mark
+        return `<mark class="search-hit">${Util.esc(part)}</mark>`;
+      }
+      return Util.esc(part);
+    }).join('');
+  },
+
+  /**
+   * Verwerk een DOM-container: vervang textNode-inhoud met highlighted HTML.
+   * Werkt recursief op tekstknooppunten, raakt geen HTML-structuur aan.
+   *
+   * @param {Element} container - het DOM-element om te verwerken
+   * @param {RegExp}  regex
+   */
+  highlightDOM(container, regex) {
+    if (!container || !regex) return;
+    const walker = document.createTreeWalker(
+      container,
+      NodeFilter.SHOW_TEXT,
+      {
+        acceptNode(node) {
+          // Skip nodes binnen al bestaande marks, scripts, styles
+          const parent = node.parentElement;
+          if (!parent) return NodeFilter.FILTER_REJECT;
+          const tag = parent.tagName.toLowerCase();
+          if (tag === 'mark' || tag === 'script' || tag === 'style') {
+            return NodeFilter.FILTER_REJECT;
+          }
+          return NodeFilter.FILTER_ACCEPT;
+        }
+      }
+    );
+
+    const toReplace = [];
+    let node;
+    while ((node = walker.nextNode())) {
+      if (regex.test(node.textContent)) {
+        toReplace.push(node);
+      }
+      regex.lastIndex = 0; // reset stateful regex
+    }
+
+    // Vervang tekstknopen door HTML met highlights
+    for (const textNode of toReplace) {
+      const highlighted = HighlightEngine.highlightText(textNode.textContent, regex);
+      const span = document.createElement('span');
+      span.innerHTML = highlighted;
+      textNode.parentNode.replaceChild(span, textNode);
+    }
+  },
+
+  /**
+   * Verzamel alle .search-hit elementen na highlighting.
+   * Sla op in _hits voor navigatie.
+   */
+  collectHits(container) {
+    HighlightEngine._hits = Array.from(container.querySelectorAll('.search-hit'));
+    HighlightEngine._activeIdx = -1;
+    return HighlightEngine._hits.length;
+  },
+
+  /**
+   * Activeer een treffer op index: voeg --active class toe, scroll.
+   */
+  setActive(idx) {
+    const hits = HighlightEngine._hits;
+    if (hits.length === 0) return;
+
+    // Clamp index
+    idx = Math.max(0, Math.min(idx, hits.length - 1));
+
+    // Deactiveer vorige
+    if (HighlightEngine._activeIdx >= 0 && hits[HighlightEngine._activeIdx]) {
+      hits[HighlightEngine._activeIdx].classList.remove('search-hit--active');
+    }
+
+    // Activeer nieuwe
+    hits[idx].classList.add('search-hit--active');
+    HighlightEngine._activeIdx = idx;
+
+    // Scroll soepel naar treffer
+    hits[idx].scrollIntoView({ behavior: 'smooth', block: 'center' });
+  },
+
+  /** Ga naar volgende treffer */
+  next() {
+    if (HighlightEngine._hits.length === 0) return;
+    const next = (HighlightEngine._activeIdx + 1) % HighlightEngine._hits.length;
+    HighlightEngine.setActive(next);
+    HighlightEngine._updateNavBar();
+  },
+
+  /** Ga naar vorige treffer */
+  prev() {
+    if (HighlightEngine._hits.length === 0) return;
+    const n = HighlightEngine._hits.length;
+    const prev = (HighlightEngine._activeIdx - 1 + n) % n;
+    HighlightEngine.setActive(prev);
+    HighlightEngine._updateNavBar();
+  },
+
+  /** Reset hits en state */
+  reset() {
+    HighlightEngine._hits = [];
+    HighlightEngine._activeIdx = -1;
+  },
+
+  /** Update de teller in de navbalk na navigatie */
+  _updateNavBar() {
+    const countEl = document.getElementById('modal-hit-count');
+    if (!countEl) return;
+    const total = HighlightEngine._hits.length;
+    const active = HighlightEngine._activeIdx + 1;
+    countEl.innerHTML = `<strong>${active}</strong> van <strong>${total}</strong>`;
+  },
+
+  /**
+   * Bouw de zoeknavigatiebalk HTML op.
+   * @param {object} ctx    - State.searchContext
+   * @param {number} hits   - aantal gevonden treffers
+   * @param {boolean} searchable
+   * @returns {string} HTML
+   */
+  buildNavBar(ctx, hits, searchable) {
+    if (!ctx || !ctx.active) return '';
+
+    const termDisplay = Util.esc(ctx.query.slice(0, 40) + (ctx.query.length > 40 ? '…' : ''));
+    const sourceLabel = ctx.source === 'topbar' ? 'zoekbalk' : 'zoekresultaten';
+
+    if (!searchable) {
+      return `<div class="modal-search-nav" role="search" aria-label="Zoeknavigatie">
+        <span class="modal-search-nav-label">🔍 <span class="modal-search-nav-term">${termDisplay}</span></span>
+        <span class="modal-search-nav-not-searchable">Dit document is niet doorzoekbaar</span>
+      </div>`;
+    }
+
+    if (hits === 0) {
+      return `<div class="modal-search-nav" role="search" aria-label="Zoeknavigatie">
+        <span class="modal-search-nav-label">🔍 <span class="modal-search-nav-term">${termDisplay}</span></span>
+        <span class="modal-search-nav-no-hits">Geen treffers in dit document</span>
+        <span class="modal-search-nav-source">via ${sourceLabel}</span>
+      </div>`;
+    }
+
+    const prevDisabled = hits <= 1 ? 'disabled' : '';
+    const nextDisabled = hits <= 1 ? 'disabled' : '';
+
+    return `<div class="modal-search-nav" role="search" aria-label="Zoeknavigatie">
+      <span class="modal-search-nav-label">🔍 <span class="modal-search-nav-term">${termDisplay}</span></span>
+      <span class="modal-search-nav-count" id="modal-hit-count">
+        <strong>1</strong> van <strong>${hits}</strong>
+      </span>
+      <span class="modal-search-nav-source">via ${sourceLabel}</span>
+      <div class="modal-search-nav-btns">
+        <button class="modal-search-nav-btn" id="modal-hit-prev"
+          ${prevDisabled} aria-label="Vorige treffer" title="Vorige treffer (↑)">↑</button>
+        <button class="modal-search-nav-btn" id="modal-hit-next"
+          ${nextDisabled} aria-label="Volgende treffer" title="Volgende treffer (↓)">↓</button>
+      </div>
+    </div>`;
+  },
+
+  /**
+   * Bind keyboard- en klikevents op de navbalk knoppen.
+   */
+  bindNavBar() {
+    const prev = document.getElementById('modal-hit-prev');
+    const next = document.getElementById('modal-hit-next');
+    if (prev) {
+      prev.addEventListener('click', () => HighlightEngine.prev());
+    }
+    if (next) {
+      next.addEventListener('click', () => HighlightEngine.next());
+    }
+  },
+
+  /**
+   * Bepaal in welk deel de match is gevonden voor P6 (waarom dit resultaat).
+   */
+  matchSource(doc, terms) {
+    const titleLow = doc.title.toLowerCase();
+    const fileLow = (doc.originalFileName || '').toLowerCase();
+    const contentLow = (doc.content || '').toLowerCase();
+    const sources = [];
+    for (const t of terms) {
+      if (titleLow.includes(t)) { if (!sources.includes('titel')) sources.push('titel'); }
+      if (fileLow.includes(t) && !titleLow.includes(t)) { if (!sources.includes('bestandsnaam')) sources.push('bestandsnaam'); }
+      if (contentLow.includes(t)) { if (!sources.includes('inhoud')) sources.push('inhoud'); }
+    }
+    return sources.length > 0 ? sources.join(', ') : null;
+  },
+};
+
+/* ============================================================
    SECTION 7: RENDERING LAYER
    All UI rendering goes through here
    ============================================================ */
@@ -3141,6 +3548,9 @@ const Render = {
     if (!doc) return;
     State.activeDocId = docId;
 
+    // Reset highlight engine voor elke nieuwe modal open
+    HighlightEngine.reset();
+
     // Ensure articles parsed (lazy, cached)
     if (doc.searchable && doc.content && !doc.articles) LawParser.parse(doc);
 
@@ -3167,8 +3577,14 @@ const Render = {
         ? ` · ${(doc.metadata.contentLength/1000).toFixed(1)}K tekens`
         : doc.content ? ` · ${(doc.content.length/1000).toFixed(1)}K tekens` : '';
       const chunks = doc.metadata.chunkCount ? ` · ${doc.metadata.chunkCount} chunks` : '';
+      // P6: toon ook match-bron als er een zoekcontext is
+      let matchInfo = '';
+      if (SearchContext.isActive()) {
+        const src = HighlightEngine.matchSource(doc, State.searchContext.terms);
+        if (src) matchInfo = ` · treffer in: ${src}`;
+      }
       banner.className = 'modal-parse-banner searchable';
-      banner.innerHTML = `<span>✓</span><span>Volledig ingelezen${pages}${chars}${artInfo}${chunks}${fallback}</span>`;
+      banner.innerHTML = `<span>✓</span><span>Volledig ingelezen${pages}${chars}${artInfo}${chunks}${fallback}${matchInfo}</span>`;
     } else if (doc.parseStatus === 'unsupported') {
       banner.className = 'modal-parse-banner not-searchable';
       banner.innerHTML = `<span>◐</span><span>${Util.esc(doc.parseError || 'Dit bestandstype is momenteel niet doorzoekbaar.')}</span>`;
@@ -3180,32 +3596,73 @@ const Render = {
       banner.innerHTML = '';
     }
 
-    // Page map replaced by law navigation if articles present
+    // Page map / law nav placeholder
     const pageMapEl = document.getElementById('modal-page-map');
-    pageMapEl.innerHTML = ''; // law nav is rendered in content area
+    pageMapEl.innerHTML = '';
 
     // --- CONTENT AREA ---
     const contentArea = document.getElementById('modal-content-area');
+    const ctx = State.searchContext;
+    const regex = SearchContext.isActive() ? HighlightEngine.buildRegex(ctx.terms) : null;
 
     if (hasArticles) {
       // Two-column law layout
       contentArea.innerHTML = Render.buildLawLayout(doc);
       Render.bindLawLayoutEvents(doc, contentArea);
 
-      // Scroll to target article if specified
+      // Highlight in law content als zoekcontext actief
+      if (regex) {
+        const lawPanel = contentArea.querySelector('#lawContentPanel');
+        if (lawPanel) {
+          HighlightEngine.highlightDOM(lawPanel, regex);
+        }
+      }
+
+      // Scroll naar target artikel (vanuit sidebar klik)
       if (targetArticleId) {
-        requestAnimationFrame(() => {
-          Render.scrollToArticle(contentArea, targetArticleId, doc);
-        });
+        requestAnimationFrame(() => Render.scrollToArticle(contentArea, targetArticleId, doc));
       }
     } else {
-      // Plain content fallback
+      // Plain content
       const plainContent = doc.content || doc.contentPreview || '(Geen inhoud beschikbaar voor dit document.)';
       contentArea.innerHTML = `<div class="modal-plain-content" role="region" aria-label="Documentinhoud" tabindex="0"></div>`;
-      contentArea.querySelector('.modal-plain-content').textContent = plainContent;
+      const plainEl = contentArea.querySelector('.modal-plain-content');
+
+      if (regex && doc.searchable && plainContent.length > 0) {
+        // Highlight: zet als HTML (veilig via highlightText die intern Util.esc gebruikt)
+        plainEl.innerHTML = HighlightEngine.highlightText(plainContent, regex);
+      } else {
+        // Geen highlight — plain text via textContent (altijd veilig)
+        plainEl.textContent = plainContent;
+      }
     }
 
-    // Open
+    // --- ZOEKNAVIGATIE BALK ---
+    // Bouw navbalk, inject vóór content area
+    const navbarContainer = document.getElementById('modal-search-nav-container');
+    if (navbarContainer) {
+      if (SearchContext.isActive()) {
+        // Tel treffers na highlight (altijd na DOM-manipulatie)
+        const hitCount = HighlightEngine.collectHits(contentArea);
+        navbarContainer.innerHTML = HighlightEngine.buildNavBar(ctx, hitCount, doc.searchable);
+        HighlightEngine.bindNavBar();
+
+        // Activeer eerste treffer en scroll ernaar
+        if (hitCount > 0) {
+          requestAnimationFrame(() => {
+            HighlightEngine.setActive(0);
+            HighlightEngine._updateNavBar();
+          });
+        }
+      } else {
+        navbarContainer.innerHTML = '';
+      }
+    }
+
+    // Keyboard navigatie in navbalk (↑ ↓)
+    // Wordt gebonden via global keydown listener (zie Events.init)
+
+    // Open modal
     const overlay = document.getElementById('detailModal');
     overlay.classList.add('open');
     document.body.style.overflow = 'hidden';
@@ -3587,6 +4044,12 @@ const UI = {
       document.getElementById('search-empty').style.display = 'none';
       setTimeout(() => document.getElementById('searchView').focus(), 50);
     }
+    // Bewaar searchContext bij zoeken — reset alleen bij andere views
+    if (viewId !== 'zoeken') {
+      // Behoud context zodat modal vanuit andere views nog steeds highlighted
+      // maar reset bij bewuste navigate weg (dashboard, upload, documenten)
+      // Opmerking: context blijft actief zolang de modal open is
+    }
   },
 
   showConfirm(title, sub, onConfirm) {
@@ -3778,16 +4241,20 @@ const Events = {
       const q = mainSearch.value;
       searchClear.classList.toggle('visible', q.length > 0);
       if (q.trim().length > 0) {
+        SearchContext.set(q.trim(), 'topbar');
         document.getElementById('searchView').value = q;
         UI.showView('zoeken');
         const results = Search.query(q, State.searchFilter);
         Render.searchResults(results, q.trim());
+      } else {
+        SearchContext.reset();
       }
     });
     searchClear.addEventListener('click', () => {
       mainSearch.value = '';
       document.getElementById('searchView').value = '';
       searchClear.classList.remove('visible');
+      SearchContext.reset();
     });
 
     // Search view
@@ -3797,9 +4264,11 @@ const Events = {
       mainSearch.value = q;
       document.getElementById('searchClear').classList.toggle('visible', q.length > 0);
       if (q.trim().length > 0) {
+        SearchContext.set(q.trim(), 'search-view');
         const results = Search.query(q, State.searchFilter);
         Render.searchResults(results, q.trim());
       } else {
+        SearchContext.reset();
         document.getElementById('search-results-section').style.display = 'none';
         document.getElementById('search-empty').style.display = 'none';
         document.getElementById('search-initial').style.display = '';
@@ -3846,13 +4315,24 @@ const Events = {
       );
     });
 
-    // Keyboard: Escape closes modals
+    // Keyboard: Escape closes modals + ↑↓ voor zoeknavigatie
     document.addEventListener('keydown', e => {
       if (e.key === 'Escape') {
         if (document.getElementById('confirmDialog').classList.contains('open')) {
           document.getElementById('confirmDialog').classList.remove('open');
         } else {
           Render.closeModal();
+        }
+      }
+      // Pijltjestoetsen voor treffer-navigatie in open modal
+      if (document.getElementById('detailModal').classList.contains('open')) {
+        if (e.key === 'ArrowDown' && e.altKey) {
+          e.preventDefault();
+          HighlightEngine.next();
+        }
+        if (e.key === 'ArrowUp' && e.altKey) {
+          e.preventDefault();
+          HighlightEngine.prev();
         }
       }
     });
