@@ -1624,7 +1624,7 @@ mark.highlight {
   </div>
 
   <div class="sidebar-footer">
-    <span class="sidebar-version">Kennisbank BAVPOL · v7.0</span>
+    <span class="sidebar-version">Kennisbank BAVPOL · v8.0</span>
   </div>
 </nav>
 
@@ -1994,101 +1994,339 @@ function createDoc(overrides) {
 }
 
 /* ============================================================
-   SECTION 4: STORAGE LAYER
-   Versioned, validated, migration-aware
+   SECTION 4: STORAGE LAYER v8
+   IndexedDB-gebaseerde opslag — geen limieten, geen truncatie.
+   Fallback naar in-memory als IndexedDB niet beschikbaar is.
    ============================================================ */
-const Storage = {
-  save(docs) {
-    // Probeer volledige opslag
-    const payload = { version: CFG.STORAGE_VERSION, docs, savedAt: Date.now() };
-    try {
-      localStorage.setItem(CFG.STORAGE_KEY, JSON.stringify(payload));
-      return true;
-    } catch (e) {
-      if (e.name === 'QuotaExceededError') {
-        // Fallback: sla op zonder content van grote documenten
-        // Content blijft in State.documents (geheugen) voor huidige sessie
-        console.warn('[Storage] Quota overschreden, sla op zonder grote content...');
-        const CONTENT_LIMIT = 50000; // max tekens per doc in localStorage
-        const trimmedDocs = docs.map(d => {
-          if ((d.content || '').length > CONTENT_LIMIT) {
-            return { ...d,
-              content: d.content.slice(0, CONTENT_LIMIT),
-              metadata: { ...d.metadata, contentTrimmedForStorage: true, fullContentLength: d.content.length }
-            };
-          }
-          return d;
-        });
-        try {
-          const fallbackPayload = { version: CFG.STORAGE_VERSION, docs: trimmedDocs, savedAt: Date.now() };
-          localStorage.setItem(CFG.STORAGE_KEY, JSON.stringify(fallbackPayload));
-          UI.toast('⚠️ Document te groot voor lokale opslag. Content beschikbaar in huidige sessie.', 'info');
-          return true;
-        } catch(e2) {
-          UI.toast('Opslagruimte vol. Verwijder oudere documenten voor permanente opslag.', 'error');
-          return false;
+
+/* ----------------------------------------------------------
+   4a: IndexedDB Engine
+   Laag-niveau wrapper rond IndexedDB.
+   ---------------------------------------------------------- */
+const IDB = {
+  DB_NAME: 'BAVPOL_DB',
+  DB_VERSION: 1,
+  STORE_DOCS: 'documents',
+  STORE_SETTINGS: 'settings',
+
+  _db: null,   // gecachte database instantie
+
+  /**
+   * Open (of hergebruik) de IndexedDB database.
+   * @returns {Promise<IDBDatabase>}
+   */
+  open() {
+    if (IDB._db) return Promise.resolve(IDB._db);
+    return new Promise((resolve, reject) => {
+      if (!window.indexedDB) {
+        reject(new Error('IndexedDB niet beschikbaar in deze browser.'));
+        return;
+      }
+      const req = window.indexedDB.open(IDB.DB_NAME, IDB.DB_VERSION);
+
+      req.onupgradeneeded = (e) => {
+        const db = e.target.result;
+        // Object store: documents (één record per document, inclusief volledige content)
+        if (!db.objectStoreNames.contains(IDB.STORE_DOCS)) {
+          db.createObjectStore(IDB.STORE_DOCS, { keyPath: 'id' });
         }
-      } else {
+        // Object store: settings (key-value)
+        if (!db.objectStoreNames.contains(IDB.STORE_SETTINGS)) {
+          db.createObjectStore(IDB.STORE_SETTINGS, { keyPath: 'key' });
+        }
+      };
+
+      req.onsuccess = (e) => {
+        IDB._db = e.target.result;
+        console.info('[Storage] IndexedDB geopend: ' + IDB.DB_NAME + ' v' + IDB.DB_VERSION);
+        resolve(IDB._db);
+      };
+
+      req.onerror = (e) => {
+        reject(new Error('IndexedDB open fout: ' + e.target.error));
+      };
+    });
+  },
+
+  /**
+   * Sla één document op (PUT = insert of update).
+   * @param {object} doc
+   * @returns {Promise<void>}
+   */
+  putDoc(doc) {
+    return IDB.open().then(db => new Promise((resolve, reject) => {
+      const tx = db.transaction(IDB.STORE_DOCS, 'readwrite');
+      const store = tx.objectStore(IDB.STORE_DOCS);
+      const req = store.put(doc);
+      req.onsuccess = () => resolve();
+      req.onerror = (e) => reject(e.target.error);
+    }));
+  },
+
+  /**
+   * Haal alle documenten op.
+   * @returns {Promise<object[]>}
+   */
+  getAllDocs() {
+    return IDB.open().then(db => new Promise((resolve, reject) => {
+      const tx = db.transaction(IDB.STORE_DOCS, 'readonly');
+      const store = tx.objectStore(IDB.STORE_DOCS);
+      const req = store.getAll();
+      req.onsuccess = (e) => resolve(e.target.result || []);
+      req.onerror = (e) => reject(e.target.error);
+    }));
+  },
+
+  /**
+   * Verwijder één document op id.
+   * @param {string} id
+   * @returns {Promise<void>}
+   */
+  deleteDoc(id) {
+    return IDB.open().then(db => new Promise((resolve, reject) => {
+      const tx = db.transaction(IDB.STORE_DOCS, 'readwrite');
+      const store = tx.objectStore(IDB.STORE_DOCS);
+      const req = store.delete(id);
+      req.onsuccess = () => resolve();
+      req.onerror = (e) => reject(e.target.error);
+    }));
+  },
+
+  /**
+   * Sla een setting op.
+   * @param {string} key
+   * @param {*} value
+   * @returns {Promise<void>}
+   */
+  putSetting(key, value) {
+    return IDB.open().then(db => new Promise((resolve, reject) => {
+      const tx = db.transaction(IDB.STORE_SETTINGS, 'readwrite');
+      const store = tx.objectStore(IDB.STORE_SETTINGS);
+      const req = store.put({ key, value });
+      req.onsuccess = () => resolve();
+      req.onerror = (e) => reject(e.target.error);
+    }));
+  },
+
+  /**
+   * Lees een setting.
+   * @param {string} key
+   * @returns {Promise<*>}
+   */
+  getSetting(key) {
+    return IDB.open().then(db => new Promise((resolve, reject) => {
+      const tx = db.transaction(IDB.STORE_SETTINGS, 'readonly');
+      const store = tx.objectStore(IDB.STORE_SETTINGS);
+      const req = store.get(key);
+      req.onsuccess = (e) => resolve(e.target.result ? e.target.result.value : undefined);
+      req.onerror = (e) => reject(e.target.error);
+    }));
+  },
+
+  /**
+   * Wis alle data (debug).
+   * @returns {Promise<void>}
+   */
+  clearAll() {
+    return IDB.open().then(db => new Promise((resolve, reject) => {
+      const tx = db.transaction([IDB.STORE_DOCS, IDB.STORE_SETTINGS], 'readwrite');
+      tx.objectStore(IDB.STORE_DOCS).clear();
+      tx.objectStore(IDB.STORE_SETTINGS).clear();
+      tx.oncomplete = () => resolve();
+      tx.onerror = (e) => reject(e.target.error);
+    }));
+  },
+};
+
+/* ----------------------------------------------------------
+   4b: Storage — publieke API
+   Vervangt de oude localStorage-gebaseerde Storage.
+   Interface is nagenoeg identiek, maar alle operaties zijn
+   asynchroon (Promise-gebaseerd).
+   ---------------------------------------------------------- */
+const Storage = {
+
+  // Of IndexedDB beschikbaar en actief is
+  _idbAvailable: false,
+
+  // In-memory fallback (alleen tijdens sessie als IDB niet werkt)
+  _memoryStore: [],
+
+  /**
+   * Initialiseer de storage — open IDB, migreer localStorage indien aanwezig.
+   * Moet worden aangeroepen vóór enig ander gebruik.
+   * @returns {Promise<object[]>} — geladen documenten
+   */
+  async init() {
+    // Probeer IndexedDB te openen
+    try {
+      await IDB.open();
+      Storage._idbAvailable = true;
+      console.info('[Storage] IndexedDB actief ✓');
+    } catch (e) {
+      Storage._idbAvailable = false;
+      console.warn('[Storage] IndexedDB niet beschikbaar, in-memory fallback actief:', e.message);
+    }
+
+    // Migreer localStorage → IndexedDB (eenmalig)
+    if (Storage._idbAvailable) {
+      await Storage._migrateFromLocalStorage();
+    }
+
+    // Laad alle documenten
+    const docs = await Storage.load();
+    return docs;
+  },
+
+  /**
+   * Sla alle huidige documenten op.
+   * @param {object[]} docs
+   * @returns {Promise<boolean>}
+   */
+  async save(docs) {
+    if (!Array.isArray(docs)) return false;
+
+    if (Storage._idbAvailable) {
+      try {
+        // Sla elk document afzonderlijk op (paralleliseer voor snelheid)
+        await Promise.all(docs.map(doc => IDB.putDoc(doc)));
+        const totalChars = docs.reduce((s, d) => s + (d.content || '').length, 0);
+        console.info(`[Storage] ${docs.length} document(en) opgeslagen in IndexedDB | ${(totalChars/1000).toFixed(1)}K tekens totaal`);
+        return true;
+      } catch (e) {
+        console.error('[Storage] Opslaan mislukt:', e);
         UI.toast('Opslaan mislukt: ' + e.message, 'error');
         return false;
       }
+    } else {
+      // In-memory fallback
+      Storage._memoryStore = [...docs];
+      console.info('[Storage] Opgeslagen in geheugen (sessie only) — ' + docs.length + ' docs');
+      return true;
     }
   },
 
-  load() {
-    // Try v2 first
+  /**
+   * Sla één document op (na upload/wijziging).
+   * @param {object} doc
+   * @returns {Promise<boolean>}
+   */
+  async saveOne(doc) {
+    if (Storage._idbAvailable) {
+      try {
+        await IDB.putDoc(doc);
+        console.info(`[Storage] Document opgeslagen: "${doc.title}" | ${(( doc.content || '').length/1000).toFixed(1)}K tekens`);
+        return true;
+      } catch (e) {
+        console.error('[Storage] saveOne mislukt:', e);
+        return false;
+      }
+    } else {
+      const idx = Storage._memoryStore.findIndex(d => d.id === doc.id);
+      if (idx >= 0) Storage._memoryStore[idx] = doc;
+      else Storage._memoryStore.unshift(doc);
+      return true;
+    }
+  },
+
+  /**
+   * Laad alle documenten.
+   * @returns {Promise<object[]>}
+   */
+  async load() {
+    if (Storage._idbAvailable) {
+      try {
+        const raw = await IDB.getAllDocs();
+        const docs = raw.map(Storage.validateDoc).filter(Boolean);
+        console.info(`[Storage] ${docs.length} document(en) geladen uit IndexedDB`);
+        return docs;
+      } catch (e) {
+        console.error('[Storage] Laden mislukt:', e);
+        return [];
+      }
+    } else {
+      return [...Storage._memoryStore];
+    }
+  },
+
+  /**
+   * Verwijder één document.
+   * @param {string} id
+   */
+  async remove(id) {
+    State.documents = State.documents.filter(d => d.id !== id);
+    if (Storage._idbAvailable) {
+      try {
+        await IDB.deleteDoc(id);
+        console.info('[Storage] Document verwijderd: ' + id);
+      } catch (e) {
+        console.error('[Storage] Verwijderen mislukt:', e);
+      }
+    } else {
+      Storage._memoryStore = Storage._memoryStore.filter(d => d.id !== id);
+    }
+    Render.refresh();
+    UI.toast('Document verwijderd.', 'info');
+  },
+
+  /**
+   * Migreer bestaande localStorage data naar IndexedDB (eenmalig).
+   * @returns {Promise<void>}
+   */
+  async _migrateFromLocalStorage() {
+    // Controleer of migratie al gedaan is
+    try {
+      const migrated = await IDB.getSetting('ls_migrated');
+      if (migrated) return; // al gemigreerd
+    } catch(e) { /* geen setting */ }
+
+    // Probeer v2 localStorage
+    let lsDocs = [];
     try {
       const raw = localStorage.getItem(CFG.STORAGE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (parsed && Array.isArray(parsed.docs)) {
-          return parsed.docs.map(Storage.validateDoc);
+        if (parsed && Array.isArray(parsed.docs) && parsed.docs.length > 0) {
+          lsDocs = parsed.docs;
+          console.info(`[Storage] Migratie: ${lsDocs.length} docs gevonden in localStorage`);
         }
       }
-    } catch (e) {
-      console.warn('v2 storage load failed, trying migration', e);
+    } catch(e) { /* geen v2 data */ }
+
+    // Probeer legacy v1 localStorage
+    if (lsDocs.length === 0) {
+      try {
+        const raw = localStorage.getItem(CFG.LEGACY_KEY);
+        if (raw) {
+          const arr = JSON.parse(raw);
+          if (Array.isArray(arr)) lsDocs = arr;
+        }
+      } catch(e) { /* geen v1 data */ }
     }
 
-    // Try legacy v1 migration
-    return Storage.migrateLegacy();
-  },
+    if (lsDocs.length > 0) {
+      const validated = lsDocs.map(Storage.validateDoc).filter(Boolean);
+      await Promise.all(validated.map(doc => IDB.putDoc(doc)));
+      console.info(`[Storage] Migratie voltooid: ${validated.length} docs naar IndexedDB`);
+      UI.toast(`${validated.length} documenten gemigreerd naar IndexedDB.`, 'info');
+    }
 
-  migrateLegacy() {
+    // Verwijder localStorage data na succesvolle migratie
     try {
-      const raw = localStorage.getItem(CFG.LEGACY_KEY);
-      if (!raw) return [];
-      const arr = JSON.parse(raw);
-      if (!Array.isArray(arr)) return [];
-      console.info('Migrating', arr.length, 'documents from v1 to v2');
-      const migrated = arr.map(old => createDoc({
-        id: old.id || Util.uid(),
-        title: old.name || old.title || old.filename || 'Onbekend',
-        originalFileName: old.filename || old.originalFileName || '',
-        type: (old.extension || old.type || '').toLowerCase(),
-        category: old.category || 'overig',
-        size: old.size || 0,
-        uploadedAt: old.addedAt || old.uploadedAt || Date.now(),
-        parsedAt: Date.now(),
-        searchable: !!(old.content && old.content.length > 10),
-        parseStatus: (old.content && old.content.length > 10) ? 'done' : 'unsupported',
-        content: (old.content || ''),            // GEEN truncatie
-        contentPreview: old.preview || (old.content || '').slice(0, CFG.MAX_PREVIEW_CHARS),
-        pageMap: [],
-        metadata: {},
-      }));
-      // Save migrated and clean up legacy
-      Storage.save(migrated);
+      localStorage.removeItem(CFG.STORAGE_KEY);
       localStorage.removeItem(CFG.LEGACY_KEY);
-      UI.toast('Bestaande documenten succesvol gemigreerd naar v2.', 'info');
-      return migrated;
-    } catch (e) {
-      console.error('Migration failed', e);
-      return [];
-    }
+    } catch(e) { /* best effort */ }
+
+    // Markeer migratie als gedaan
+    await IDB.putSetting('ls_migrated', true);
   },
 
+  /**
+   * Valideer en normaliseer een document-object.
+   * @param {object} d
+   * @returns {object|null}
+   */
   validateDoc(d) {
-    // Ensure all required fields exist; repair if missing
     if (!d || typeof d !== 'object') return null;
     return createDoc({
       id: d.id || Util.uid(),
@@ -2102,18 +2340,16 @@ const Storage = {
       searchable: d.searchable === true,
       parseStatus: d.parseStatus || 'pending',
       parseError: d.parseError || null,
-      content: (d.content || ''),           // GEEN truncatie bij laden
+      content: (d.content || ''),           // GEEN truncatie
       contentPreview: d.contentPreview || (d.content || '').slice(0, CFG.MAX_PREVIEW_CHARS),
       pageMap: Array.isArray(d.pageMap) ? d.pageMap : [],
       metadata: d.metadata || {},
     });
   },
 
-  remove(id) {
-    State.documents = State.documents.filter(d => d.id !== id);
-    Storage.save(State.documents);
-  },
-
+  /**
+   * Exporteer alle documenten als JSON back-up.
+   */
   exportJSON() {
     const payload = {
       exportedAt: new Date().toISOString(),
@@ -2133,9 +2369,13 @@ const Storage = {
     UI.toast('Back-up geëxporteerd als JSON.', 'success');
   },
 
+  /**
+   * Importeer documenten uit een JSON back-up.
+   * @param {File} file
+   */
   importJSON(file) {
     const reader = new FileReader();
-    reader.onload = e => {
+    reader.onload = async (e) => {
       try {
         const data = JSON.parse(e.target.result);
         let imported = [];
@@ -2148,11 +2388,10 @@ const Storage = {
           return;
         }
         const validated = imported.map(Storage.validateDoc).filter(Boolean);
-        // Merge: don't duplicate by id
         const existingIds = new Set(State.documents.map(d => d.id));
         const newDocs = validated.filter(d => !existingIds.has(d.id));
         State.documents.unshift(...newDocs);
-        Storage.save(State.documents);
+        await Storage.save(State.documents);
         Render.refresh();
         UI.toast(`${newDocs.length} document(en) geïmporteerd.`, 'success');
       } catch(e) {
@@ -4014,7 +4253,7 @@ const Upload = {
         if (el) el.style.width = '100%';
 
         State.documents.unshift(doc);
-        Storage.save(State.documents);
+        await Storage.saveOne(doc); // sla één doc op via IndexedDB (async)
         item.status = 'done';
 
       } catch(e) {
@@ -4356,9 +4595,7 @@ const Events = {
         `"${doc.title}" wordt permanent verwijderd uit de kennisbank.`,
         () => {
           Render.closeModal();
-          Storage.remove(id);
-          Render.refresh();
-          UI.toast('Document verwijderd.', 'info');
+          Storage.remove(id); // async, doet intern refresh + toast
         }
       );
     });
@@ -4433,7 +4670,7 @@ const Events = {
         UI.showConfirm(
           'Document verwijderen?',
           `"${doc.title}" wordt permanent verwijderd.`,
-          () => { Storage.remove(id); Render.refresh(); UI.toast('Document verwijderd.', 'info'); }
+          () => { Storage.remove(id); } // async, doet intern refresh + toast
         );
       });
     });
@@ -4496,8 +4733,8 @@ function injectIOBar() {
    SECTION 14: SAMPLE DATA LOADER
    v3: enriched with cross-references for law article demo
    ============================================================ */
-function loadSampleDocuments() {
-  if (localStorage.getItem(CFG.SAMPLE_DOCS_LOADED_KEY)) return;
+async function loadSampleDocuments() {
+  // Check wordt gedaan door de aanroeper (init) — hier direct doorstarten
 
   const makeContent = parts => parts.join('\n');
 
@@ -4695,24 +4932,32 @@ function loadSampleDocuments() {
   ];
 
   State.documents = samples;
-  Storage.save(State.documents);
-  localStorage.setItem(CFG.SAMPLE_DOCS_LOADED_KEY, '1');
+  await Storage.save(State.documents);
+  // Bewaar de flag in IndexedDB in plaats van localStorage
+  try { await IDB.putSetting(CFG.SAMPLE_DOCS_LOADED_KEY, true); } catch(e) {}
 }
 
 /* ============================================================
-   SECTION 15: INIT
+   SECTION 15: INIT (async)
    ============================================================ */
-function init() {
+async function init() {
   // Load libraries
   checkLibraries();
 
-  // Load data (with migration)
-  const loaded = Storage.load().filter(Boolean);
+  // Initialiseer IndexedDB en laad data (met migratie)
+  const loaded = await Storage.init();
   State.documents = loaded;
 
   // Load samples only if database is truly empty
   if (State.documents.length === 0) {
-    loadSampleDocuments();
+    // Controleer of samples al geladen zijn via IDB
+    let samplesLoaded = false;
+    try { samplesLoaded = await IDB.getSetting(CFG.SAMPLE_DOCS_LOADED_KEY); } catch(e) {}
+    // Fallback: check localStorage voor backwards compatibiliteit
+    if (!samplesLoaded) samplesLoaded = !!localStorage.getItem(CFG.SAMPLE_DOCS_LOADED_KEY);
+    if (!samplesLoaded) {
+      await loadSampleDocuments();
+    }
   }
 
   // Bind all events
