@@ -1624,7 +1624,7 @@ mark.highlight {
   </div>
 
   <div class="sidebar-footer">
-    <span class="sidebar-version">Kennisbank BAVPOL · v6.0</span>
+    <span class="sidebar-version">Kennisbank BAVPOL · v7.0</span>
   </div>
 </nav>
 
@@ -1999,17 +1999,39 @@ function createDoc(overrides) {
    ============================================================ */
 const Storage = {
   save(docs) {
+    // Probeer volledige opslag
     const payload = { version: CFG.STORAGE_VERSION, docs, savedAt: Date.now() };
     try {
       localStorage.setItem(CFG.STORAGE_KEY, JSON.stringify(payload));
       return true;
     } catch (e) {
       if (e.name === 'QuotaExceededError') {
-        UI.toast('Opslagruimte vol. Verwijder oudere documenten.', 'error');
+        // Fallback: sla op zonder content van grote documenten
+        // Content blijft in State.documents (geheugen) voor huidige sessie
+        console.warn('[Storage] Quota overschreden, sla op zonder grote content...');
+        const CONTENT_LIMIT = 50000; // max tekens per doc in localStorage
+        const trimmedDocs = docs.map(d => {
+          if ((d.content || '').length > CONTENT_LIMIT) {
+            return { ...d,
+              content: d.content.slice(0, CONTENT_LIMIT),
+              metadata: { ...d.metadata, contentTrimmedForStorage: true, fullContentLength: d.content.length }
+            };
+          }
+          return d;
+        });
+        try {
+          const fallbackPayload = { version: CFG.STORAGE_VERSION, docs: trimmedDocs, savedAt: Date.now() };
+          localStorage.setItem(CFG.STORAGE_KEY, JSON.stringify(fallbackPayload));
+          UI.toast('⚠️ Document te groot voor lokale opslag. Content beschikbaar in huidige sessie.', 'info');
+          return true;
+        } catch(e2) {
+          UI.toast('Opslagruimte vol. Verwijder oudere documenten voor permanente opslag.', 'error');
+          return false;
+        }
       } else {
         UI.toast('Opslaan mislukt: ' + e.message, 'error');
+        return false;
       }
-      return false;
     }
   },
 
@@ -2197,13 +2219,21 @@ const Parser = {
       for (let i = 1; i <= numPages; i++) {
         try {
           const page = await pdf.getPage(i);
-          const tc = await page.getTextContent({ normalizeWhitespace: true });
-          const pageText = tc.items
-            .filter(item => typeof item.str === 'string')
-            .map(item => item.str)
-            .join(' ')
-            .replace(/\s{2,}/g, ' ')
-            .trim();
+          const tc = await page.getTextContent();
+          // Gebruik hasEOL property voor correcte regelafbreking
+          let pageText = '';
+          let lastY = null;
+          for (const item of tc.items) {
+            if (typeof item.str !== 'string') continue;
+            // Voeg newline in bij regelwissel op basis van Y-positie
+            if (lastY !== null && item.transform && Math.abs(item.transform[5] - lastY) > 5) {
+              pageText += '\n';
+            }
+            pageText += item.str;
+            if (item.hasEOL) pageText += '\n';
+            if (item.transform) lastY = item.transform[5];
+          }
+          pageText = pageText.replace(/\n{3,}/g, '\n\n').replace(/[ \t]{2,}/g, ' ').trim();
 
           if (pageText.length > 0) {
             pageMap.push({ page: i, offset, length: pageText.length });
@@ -2218,7 +2248,6 @@ const Parser = {
       }
 
       const fullText = parts.join('\n\n');
-      // GEEN truncatie — sla volledige tekst op
       doc.content = fullText;
       doc.contentPreview = Util.makePreview(fullText);
       doc.pageMap = pageMap;
@@ -2229,7 +2258,15 @@ const Parser = {
       doc.metadata.pagesProcessed = parts.length;
       doc.metadata.contentLength = totalChars;
 
-      console.info(`[Parser] PDF "${doc.title}" klaar: ${numPages} pagina's, ${(totalChars/1000).toFixed(1)}K tekens`);
+      // FASE 5: uitgebreide logging — bewijs van volledige verwerking
+      const lastPageText = parts.length > 0 ? parts[parts.length - 1].slice(0, 60).replace(/\n/g, ' ') : 'LEEG';
+      console.info(
+        `[Parser] PDF "${doc.title}" KLAAR:\n` +
+        `  Pagina's: ${numPages} totaal | ${parts.length} met tekst\n` +
+        `  Tekens: ${(totalChars/1000).toFixed(1)}K\n` +
+        `  Eerste pagina: "${parts[0] ? parts[0].slice(0,60).replace(/\n/g,' ') : 'LEEG'}"\n` +
+        `  Laatste pagina (${numPages}): "${lastPageText}"`
+      );
     } catch(e) {
       console.error('pdf.js parse error', e);
       doc.parseStatus = 'error';
@@ -2473,7 +2510,7 @@ const LawParser = {
         num: positions[i].num,
         law: positions[i].law,
         title: positions[i].title,
-        content: rawContent.slice(0, 3000), // cap per article
+        content: rawContent, // GEEN cap — volledige artikelinhoud
         startIndex: start,
         endIndex: end,
         members,
@@ -2505,7 +2542,7 @@ const LawParser = {
       const num = m[1];
       const text = m[2].replace(/\s+/g, ' ').trim();
       if (text.length > 5) {
-        members.push({ id: `lid ${num}`, content: text.slice(0, 500) });
+        members.push({ id: `lid ${num}`, content: text }); // GEEN cap
       }
     }
 
@@ -2517,10 +2554,10 @@ const LawParser = {
         const startPos = m.index + m[0].length;
         const nextMatch = LID_NUM_RE.exec(articleText);
         const endPos = nextMatch ? nextMatch.index : articleText.length;
-        LID_NUM_RE.lastIndex = nextMatch ? nextMatch.index : articleText.length; // reset
+        LID_NUM_RE.lastIndex = nextMatch ? nextMatch.index : articleText.length;
         const text = articleText.slice(startPos, endPos).replace(/\s+/g, ' ').trim();
         if (text.length > 5) {
-          members.push({ id: `lid ${num}`, content: text.slice(0, 500) });
+          members.push({ id: `lid ${num}`, content: text }); // GEEN cap
         }
       }
     }
@@ -2673,11 +2710,22 @@ const ChunkEngine = {
 
     try {
       doc._chunks = ChunkEngine._split(doc);
-      // FASE 2: log statistieken naar console
-      console.info(`[Parser] "${doc.title}": ${(doc.content.length/1000).toFixed(1)}K tekens, ${doc._chunks.length} chunks, parseStatus=${doc.parseStatus}`);
-      // Sla statistieken op in metadata voor UI-weergave
-      doc.metadata.chunkCount = doc._chunks.length;
+      const n = doc._chunks.length;
+      const lastChunk = n > 0 ? doc._chunks[n - 1] : null;
+      const lastOk = lastChunk && lastChunk.text && lastChunk.text.trim().length > 0;
+
+      // FASE 5: gedetailleerde logging met laatste-chunk verificatie
+      console.info(
+        `[Parser] "${doc.title}" → ` +
+        `${(doc.content.length/1000).toFixed(1)}K tekens | ` +
+        `${n} chunks | ` +
+        `laatste chunk: "${lastChunk ? lastChunk.text.slice(0,50).replace(/\n/g,' ') : 'GEEN'}" ` +
+        `(${lastOk ? '✓' : '⚠ LEEG!'})`
+      );
+
+      doc.metadata.chunkCount = n;
       doc.metadata.contentLength = doc.content.length;
+      doc.metadata.lastChunkOk = lastOk;
     } catch(e) {
       console.warn('ChunkEngine error voor', doc.title, e);
       doc._chunks = [];
