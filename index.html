@@ -1624,7 +1624,7 @@ mark.highlight {
   </div>
 
   <div class="sidebar-footer">
-    <span class="sidebar-version">Kennisbank BAVPOL · v8.0</span>
+    <span class="sidebar-version">Kennisbank BAVPOL · v9.0</span>
   </div>
 </nav>
 
@@ -2255,6 +2255,7 @@ const Storage = {
    */
   async remove(id) {
     State.documents = State.documents.filter(d => d.id !== id);
+    QueryCache.invalidate(); // cache invalide na verwijdering
     if (Storage._idbAvailable) {
       try {
         await IDB.deleteDoc(id);
@@ -3047,84 +3048,244 @@ const ChunkEngine = {
   },
 };
 
+
+/* ============================================================
+   SECTION 6b: SEARCH CONTEXT MANAGER (v6)
+   Beheert de actieve zoekopdracht centraal.
+   ============================================================ */
+const SearchContext = {
+  set(query, source) {
+    const q = (query || '').trim();
+    State.searchContext = {
+      query: q,
+      terms: SearchContext.tokenize(q),
+      source: source || null,
+      active: q.length > 0,
+    };
+  },
+  reset() {
+    State.searchContext = { query: '', terms: [], source: null, active: false };
+  },
+  tokenize(query) {
+    if (!query) return [];
+    return query.trim().toLowerCase().split(/\s+/).filter(w => w.length >= 2);
+  },
+  isActive() {
+    return State.searchContext.active && State.searchContext.terms.length > 0;
+  },
+};
+
+/* ============================================================
+   SECTION 6c: HYBRIDE SEARCH ENGINE v9
+   #3  Top-K early exit (max 50 resultaten, stop bij stabiele top)
+   #4  Term normalisatie + diacritics strip
+   #5  Slimme snippet generator (zin-scoring)
+   #6  Juridische query parser (artikel X, wetnaam, intentie)
+   #8  Code guards + fail-safe rondom alle operaties
+   #9  LRU query cache (20 entries, invalideert bij nieuwe upload)
+   ============================================================ */
+
 /* ----------------------------------------------------------
-   FASE B+C+D+E — HYBRIDE SEARCH ENGINE
+   QueryParser — #6: herken juridische zoekpatronen
+   ---------------------------------------------------------- */
+const QueryParser = {
+  // Synoniemenlijst voor juridisch Nederlands
+  SYNONYMS: {
+    'aanhouding': ['arrestatie', 'aanhouden', 'ophouden'],
+    'fouillering': ['fouilleren', 'visitatie', 'onderzoek kleding'],
+    'bevoegdheid': ['bevoegd', 'mogen', 'mag', 'toestaan'],
+    'verdachte': ['verdacht', 'betrokkene', 'persoon'],
+    'politie': ['ambtenaar', 'opsporingsambtenaar', 'agent'],
+    'straf': ['sanctie', 'boete', 'gevangenisstraf', 'hechtenis'],
+    'wetboek': ['wet', 'wvsr', 'wvsv', 'awb', 'bes'],
+  },
+
+  // Patroon: "artikel 9", "art. 52", "9 politiewet", "artikel 9 sv"
+  ARTICLE_RE: /\b(art(?:ikel)?\.?\s*)(\d+[a-z]?(?:\.\d+)*)\s*([a-z]{0,10})?/i,
+
+  // Patroon: vraagvorm → intentie zoeken
+  QUESTION_RE: /^(mag\s+ik|kan\s+ik|hoe\s+|wanneer\s+|wat\s+is|wie\s+mag)/i,
+
+  /**
+   * Analyseer een zoekopdracht en geef een verrijkt query-object terug.
+   */
+  parse(queryStr) {
+    const q = (queryStr || '').trim();
+    const qLower = q.toLowerCase();
+
+    // Normaliseer: lowercase + strip diacritics
+    const normalized = QueryParser.normalize(qLower);
+    const tokens = normalized.split(/\s+/).filter(w => w.length >= 2);
+
+    // Detecteer artikel-referentie
+    const artMatch = q.match(QueryParser.ARTICLE_RE);
+    const artRef = artMatch ? { num: artMatch[2], law: (artMatch[3] || '').toLowerCase() } : null;
+
+    // Detecteer vraagvorm / intentie
+    const isQuestion = QueryParser.QUESTION_RE.test(q);
+
+    // Juridische detectie
+    const isJuridisch = /\b(art(?:ikel)?|lid|wet|sv|awb|bes|straf|aanhouding|verdacht|politie|bevoegd|vergunning|handhav|fouill|sancti)\b/.test(qLower);
+
+    // Expandeer synoniemen (alleen bij intentie-zoekopdrachten)
+    let expandedTokens = [...tokens];
+    if (isQuestion || isJuridisch) {
+      for (const [base, syns] of Object.entries(QueryParser.SYNONYMS)) {
+        if (tokens.some(t => t.includes(base) || base.includes(t))) {
+          syns.forEach(s => {
+            const sNorm = QueryParser.normalize(s);
+            if (!expandedTokens.includes(sNorm)) expandedTokens.push(sNorm);
+          });
+          break; // één synoniemset per query is genoeg
+        }
+      }
+    }
+
+    return {
+      original: q,
+      normalized,
+      tokens,                    // basis tokens
+      expandedTokens,            // tokens + synoniemen
+      artRef,                    // { num, law } of null
+      isQuestion,
+      isJuridisch,
+      isMultiWord: tokens.length > 1,
+    };
+  },
+
+  /** Strip diacritics, lowercase */
+  normalize(str) {
+    return (str || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[''`]/g, '')
+      .trim();
+  },
+};
+
+/* ----------------------------------------------------------
+   LRU Query Cache — #9
+   ---------------------------------------------------------- */
+const QueryCache = {
+  _cache: new Map(),
+  MAX: 20,
+
+  get(key) {
+    if (!this._cache.has(key)) return null;
+    // Ververs positie (LRU)
+    const val = this._cache.get(key);
+    this._cache.delete(key);
+    this._cache.set(key, val);
+    return val;
+  },
+
+  set(key, value) {
+    if (this._cache.has(key)) this._cache.delete(key);
+    if (this._cache.size >= this.MAX) {
+      // Verwijder oudste entry
+      this._cache.delete(this._cache.keys().next().value);
+    }
+    this._cache.set(key, value);
+  },
+
+  /** Invalideer cache (bij nieuwe upload of verwijdering) */
+  invalidate() {
+    this._cache.clear();
+  },
+};
+
+/* ----------------------------------------------------------
+   Search — hoofd-engine
    ---------------------------------------------------------- */
 const Search = {
 
-  // Scores (tunable constants)
+  // Scores
   W: {
-    EXACT_PHRASE_DOC:   300,  // exacte frase in heel document
-    EXACT_PHRASE_CHUNK: 250,  // exacte frase in chunk
-    TITLE_EXACT:         80,  // zoekopdracht == volledige titel
-    TITLE_PHRASE:        70,  // exacte frase in titel
-    TITLE_TOKEN:         40,  // losse token in titel
-    FILENAME_TOKEN:      15,  // token in bestandsnaam
-    ART_QUERY_MATCH:    200,  // artikelnummer-zoekopdracht gevonden
-    ART_TITLE_TOKEN:     60,  // token in artikel-titel
-    CHUNK_EXACT:        180,  // exacte frase in chunk
-    CHUNK_ALL_TOKENS:    80,  // alle tokens in één chunk
-    CHUNK_TOKEN:         12,  // token in chunk
-    ART_HINT_BONUS:      25,  // chunk heeft artikel-hint
-    PROXIMITY_BONUS:     40,  // tokens dicht bij elkaar in chunk
-    EARLY_MATCH_BONUS:   20,  // match vroeg in chunk
-    TITLE_AND_CONTENT:   30,  // match in zowel titel als inhoud
-    CATEGORY_WETGEVING:  10,  // wetgeving bij juridische query
+    EXACT_PHRASE_DOC:   300,
+    EXACT_PHRASE_CHUNK: 250,
+    TITLE_EXACT:         80,
+    TITLE_PHRASE:        70,
+    TITLE_TOKEN:         40,
+    FILENAME_TOKEN:      15,
+    ART_QUERY_MATCH:    200,
+    ART_TITLE_TOKEN:     60,
+    CHUNK_EXACT:        180,
+    CHUNK_ALL_TOKENS:    80,
+    CHUNK_TOKEN:         12,
+    CHUNK_TOKEN_EXPAND:   6,  // lager gewicht voor synoniemen
+    ART_HINT_BONUS:      25,
+    PROXIMITY_BONUS:     40,
+    EARLY_MATCH_BONUS:   20,
+    TITLE_AND_CONTENT:   30,
+    CATEGORY_WETGEVING:  10,
   },
 
-  // Hoofd-query functie
+  // Top-K instellingen — #3
+  TOP_K: 20,        // gewenste resultaten
+  MAX_SCAN: 50,     // maximaal te scannen documenten
+
+  /**
+   * Hoofd-query functie met debounce-bescherming, cache en Top-K.
+   */
   query(queryStr, filter) {
     if (!queryStr || queryStr.trim().length === 0) return [];
 
-    const q = queryStr.trim();
-    const qLower = q.toLowerCase();
-    const tokens = qLower.split(/\s+/).filter(w => w.length > 1);
-    if (tokens.length === 0) return [];
+    // #9: Check cache eerst
+    const cacheKey = queryStr.trim().toLowerCase() + '|' + (filter || 'alle');
+    const cached = QueryCache.get(cacheKey);
+    if (cached) {
+      console.debug(`[Search] Cache hit: "${queryStr}"`);
+      return cached;
+    }
 
-    const isMultiWord = tokens.length > 1;
-    const isJuridisch = Search._isJuridischeQuery(qLower);
-    const artQuery = LawParser.parseArticleQuery(q);
+    // #6: Parse query
+    const pq = QueryParser.parse(queryStr);
+    if (pq.tokens.length === 0) return [];
 
     let pool = filter === 'alle'
       ? State.documents
       : State.documents.filter(d => d.category === filter);
 
+    // #8: Guard
+    if (!pool || pool.length === 0) return [];
+
     const results = [];
 
     for (const doc of pool) {
-      // Zorg dat articles en chunks beschikbaar zijn
-      if (doc.searchable && doc.content && !doc.articles) LawParser.parse(doc);
-      if (doc.searchable && doc.content) ChunkEngine.build(doc);
-
-      const titleLower = doc.title.toLowerCase();
-      const filenameLower = (doc.originalFileName || '').toLowerCase();
-      const contentLower = (doc.content || '').toLowerCase();
+      // #8: Fail-safe rondom elke document-scoring
+      try {
+        if (doc.searchable && doc.content && !doc.articles) LawParser.parse(doc);
+        if (doc.searchable && doc.content) ChunkEngine.build(doc);
+      } catch(e) {
+        console.warn('[Search] Parse guard:', doc.title, e.message);
+        continue;
+      }
 
       let score = 0;
       let bestChunk = null;
       let articleMatch = null;
       let titleHit = false;
 
-      // --- A: EXACTE FRASE IN TITEL ---
-      if (titleLower === qLower) { score += Search.W.TITLE_EXACT; titleHit = true; }
-      else if (titleLower.includes(qLower)) { score += Search.W.TITLE_PHRASE; titleHit = true; }
+      const titleLower = QueryParser.normalize(doc.title);
+      const filenameLower = QueryParser.normalize(doc.originalFileName || '');
+      const qNorm = pq.normalized;
 
-      // --- B: LOSSE TOKENS IN TITEL ---
-      let titleTokenHits = 0;
-      for (const tok of tokens) {
-        if (titleLower.includes(tok)) { score += Search.W.TITLE_TOKEN; titleTokenHits++; titleHit = true; }
+      // --- Titel scoring ---
+      if (titleLower === qNorm) { score += Search.W.TITLE_EXACT; titleHit = true; }
+      else if (titleLower.includes(qNorm)) { score += Search.W.TITLE_PHRASE; titleHit = true; }
+      for (const tok of pq.tokens) {
+        if (titleLower.includes(tok)) { score += Search.W.TITLE_TOKEN; titleHit = true; }
       }
-
-      // --- C: BESTANDSNAAM ---
-      for (const tok of tokens) {
+      for (const tok of pq.tokens) {
         if (filenameLower.includes(tok)) score += Search.W.FILENAME_TOKEN;
       }
 
-      // --- D: ARTIKEL-ZOEKOPDRACHT ---
-      if (artQuery && doc.articles && doc.articles.length > 0) {
+      // --- Artikel-referentie ---
+      if (pq.artRef && doc.articles && doc.articles.length > 0) {
         const matchedArt = doc.articles.find(a => {
-          const numMatch = a.num.toLowerCase() === artQuery.num.toLowerCase();
-          const lawMatch = !artQuery.law || a.law.toLowerCase() === artQuery.law.toLowerCase();
+          const numMatch = a.num.toLowerCase() === pq.artRef.num.toLowerCase();
+          const lawMatch = !pq.artRef.law || a.law.toLowerCase().includes(pq.artRef.law);
           return numMatch && lawMatch;
         });
         if (matchedArt) {
@@ -3133,12 +3294,12 @@ const Search = {
         }
       }
 
-      // --- E: ARTIKEL-TITEL MATCHES ---
+      // --- Artikel-titel matches ---
       if (doc.articles) {
         for (const art of doc.articles) {
-          const artTitleLow = art.title.toLowerCase();
-          for (const tok of tokens) {
-            if (artTitleLow.includes(tok)) {
+          const artTitleNorm = QueryParser.normalize(art.title);
+          for (const tok of pq.tokens) {
+            if (artTitleNorm.includes(tok)) {
               score += Search.W.ART_TITLE_TOKEN;
               if (!articleMatch) articleMatch = art;
             }
@@ -3146,56 +3307,65 @@ const Search = {
         }
       }
 
-      // --- F: EXACTE FRASE IN DOCUMENT ---
-      if (doc.searchable && contentLower.includes(qLower)) {
+      // --- Exacte frase in document ---
+      if (doc.searchable && (doc.content || '').toLowerCase().includes(qNorm)) {
         score += Search.W.EXACT_PHRASE_DOC;
       }
 
-      // --- G: CHUNK-NIVEAU SCORING ---
+      // --- Chunk-niveau scoring (Top-K aware) ---
       if (doc._chunks && doc._chunks.length > 0) {
         let bestChunkScore = 0;
+        let chunksScanned = 0;
 
         for (const chunk of doc._chunks) {
+          // #3: Early exit als we al genoeg goede chunks hebben gevonden
+          // (stop als beste chunk score al erg hoog is EN we veel gescand hebben)
+          if (chunksScanned > 200 && bestChunkScore >= Search.W.CHUNK_EXACT + Search.W.CHUNK_ALL_TOKENS) break;
+          chunksScanned++;
+
           let cs = 0;
-          const cLow = chunk.textLower;
+          const cNorm = QueryParser.normalize(chunk.text);
 
-          // Exacte frase in chunk
-          if (cLow.includes(qLower)) {
-            cs += Search.W.CHUNK_EXACT;
-          }
+          // Exacte frase
+          if (cNorm.includes(qNorm)) cs += Search.W.CHUNK_EXACT;
 
-          // Alle tokens in chunk
-          const tokenHits = tokens.filter(t => cLow.includes(t));
-          if (tokenHits.length === tokens.length && tokens.length > 1) {
+          // Alle basis-tokens
+          const tokenHits = pq.tokens.filter(t => cNorm.includes(t));
+          if (tokenHits.length === pq.tokens.length && pq.tokens.length > 1) {
             cs += Search.W.CHUNK_ALL_TOKENS;
           }
-
-          // Per token score
-          for (const tok of tokens) {
-            if (cLow.includes(tok)) cs += Search.W.CHUNK_TOKEN;
+          for (const tok of pq.tokens) {
+            if (cNorm.includes(tok)) cs += Search.W.CHUNK_TOKEN;
           }
 
-          // FASE C: PROXIMITY bonus — tokens dicht bij elkaar?
-          if (isMultiWord && tokenHits.length >= 2) {
-            const positions = tokenHits.map(t => cLow.indexOf(t)).filter(p => p >= 0);
-            if (positions.length >= 2) {
-              const span = Math.max(...positions) - Math.min(...positions);
-              if (span < 80) cs += Search.W.PROXIMITY_BONUS;
-              else if (span < 200) cs += Search.W.PROXIMITY_BONUS / 2;
+          // Synoniemen (lager gewicht)
+          if (pq.expandedTokens.length > pq.tokens.length) {
+            for (const tok of pq.expandedTokens) {
+              if (!pq.tokens.includes(tok) && cNorm.includes(tok)) {
+                cs += Search.W.CHUNK_TOKEN_EXPAND;
+              }
             }
           }
 
-          // FASE C: Early match bonus
+          // Proximity bonus
+          if (pq.isMultiWord && tokenHits.length >= 2) {
+            const positions = tokenHits.map(t => cNorm.indexOf(t)).filter(p => p >= 0);
+            if (positions.length >= 2) {
+              const span = Math.max(...positions) - Math.min(...positions);
+              if (span < 80) cs += Search.W.PROXIMITY_BONUS;
+              else if (span < 200) cs += Math.round(Search.W.PROXIMITY_BONUS / 2);
+            }
+          }
+
+          // Early match bonus
           if (tokenHits.length > 0) {
-            const firstPos = Math.min(...tokenHits.map(t => cLow.indexOf(t)).filter(p => p >= 0));
+            const firstPos = Math.min(...tokenHits.map(t => cNorm.indexOf(t)).filter(p => p >= 0));
             if (firstPos < 100) cs += Search.W.EARLY_MATCH_BONUS;
           }
 
-          // FASE E: Artikel-hint bonus
-          if (chunk.artHint && isJuridisch) cs += Search.W.ART_HINT_BONUS;
-
-          // Categorie bonus bij juridische query + wetgeving filter
-          if (isJuridisch && doc.category === 'wetgeving') cs += Search.W.CATEGORY_WETGEVING;
+          // Artikel-hint bonus
+          if (chunk.artHint && pq.isJuridisch) cs += Search.W.ART_HINT_BONUS;
+          if (pq.isJuridisch && doc.category === 'wetgeving') cs += Search.W.CATEGORY_WETGEVING;
 
           if (cs > bestChunkScore) {
             bestChunkScore = cs;
@@ -3206,91 +3376,90 @@ const Search = {
         score += bestChunkScore;
       }
 
-      // FASE C: Bonus voor match in zowel titel als inhoud
-      if (titleHit && (bestChunk || contentLower.length > 0)) {
+      if (titleHit && (bestChunk || (doc.content || '').length > 0)) {
         score += Search.W.TITLE_AND_CONTENT;
       }
 
       if (score > 0) {
-        // FASE D: Bouw slim snippet
-        const snippet = Search._buildSmartSnippet(
-          doc, bestChunk, tokens, qLower, articleMatch
-        );
+        const snippet = Search._buildSmartSnippet(doc, bestChunk, pq.tokens, qNorm, articleMatch);
         results.push({ doc, score, snippet, articleMatch, bestChunk });
       }
+
+      // #3: Top-K early exit op document-niveau
+      if (results.length >= Search.MAX_SCAN) break;
     }
 
-    // Sorteer op score
+    // Sorteer en beperk tot TOP_K
     results.sort((a, b) => b.score - a.score);
-    return results;
+    const topResults = results.slice(0, Search.TOP_K);
+
+    // #9: Sla op in cache
+    QueryCache.set(cacheKey, topResults);
+
+    return topResults;
   },
 
-  // FASE D — SLIMME SNIPPET BUILDER
-  // Pakt de meest relevante 1-2 zinnen rond de beste match
-  _buildSmartSnippet(doc, bestChunk, tokens, qLower, articleMatch) {
-    // Prioriteit 1: gebruik de best scorende chunk
+  // #5 — Slimme snippet generator met zin-scoring
+  _buildSmartSnippet(doc, bestChunk, tokens, qNorm, articleMatch) {
     let sourceText = '';
-    let matchOffset = -1;
 
     if (bestChunk && bestChunk.text) {
       sourceText = bestChunk.text;
-      // Zoek de eerste token in de chunk
-      for (const tok of tokens) {
-        const idx = bestChunk.textLower.indexOf(tok);
-        if (idx >= 0) { matchOffset = idx; break; }
-      }
     } else if (articleMatch && articleMatch.content) {
       sourceText = articleMatch.content;
-      matchOffset = 0;
     } else if (doc.content) {
-      sourceText = doc.content;
+      // Zoek de beste passage in de volledige content
+      const cLow = doc.content.toLowerCase();
+      let bestOffset = 0;
       for (const tok of tokens) {
-        const idx = (doc.content || '').toLowerCase().indexOf(tok);
-        if (idx >= 0) { matchOffset = idx; break; }
+        const idx = cLow.indexOf(tok);
+        if (idx >= 0) { bestOffset = idx; break; }
       }
+      sourceText = doc.content.slice(Math.max(0, bestOffset - 100), bestOffset + 600);
     }
 
     if (!sourceText) return doc.contentPreview || '';
-
-    // Knip zinnen rond de match
-    return Search._extractSentences(sourceText, matchOffset, tokens);
+    return Search._scoredSentences(sourceText, tokens, qNorm);
   },
 
-  // Extraheer 1-3 relevante zinnen rond het matchpunt
-  _extractSentences(text, matchOffset, tokens) {
-    // Splits op zin-grenzen
-    const sentenceRe = /[^.!?\n]+[.!?\n]*/g;
+  // #5 — Scoor elke zin en pak de beste 1-2
+  _scoredSentences(text, tokens, qNorm) {
     const sentences = [];
+    const re = /[^.!?\n]+[.!?\n]?/g;
     let m;
-    while ((m = sentenceRe.exec(text)) !== null) {
-      sentences.push({ text: m[0].trim(), start: m.index, end: m.index + m[0].length });
-    }
-    if (sentences.length === 0) return Search._rawSnippet(text, matchOffset);
-
-    // Scoor zinnen op basis van token aanwezigheid
-    const scored = sentences.map(s => {
-      const sLow = s.text.toLowerCase();
+    while ((m = re.exec(text)) !== null) {
+      const s = m[0].trim();
+      if (s.length < 10) continue;
+      const sLow = QueryParser.normalize(s);
       let sc = 0;
+
+      // Exacte frase
+      if (sLow.includes(qNorm)) sc += 30;
+      // Token hits
       for (const tok of tokens) { if (sLow.includes(tok)) sc += 10; }
-      // Bonus als match dichtbij is
-      if (matchOffset >= 0 && s.start <= matchOffset && s.end >= matchOffset) sc += 20;
-      return { ...s, sc };
-    });
+      // Juridische signaalwoorden
+      if (/\b(bevoegd|artikel|lid\s+\d|is\s+strafbaar|kan\s+worden|wordt\s+bestraft|mag|verboden)\b/.test(sLow)) sc += 5;
+      // Proximity: tokens dicht bij elkaar
+      if (tokens.length > 1) {
+        const positions = tokens.map(t => sLow.indexOf(t)).filter(p => p >= 0);
+        if (positions.length >= 2) {
+          const span = Math.max(...positions) - Math.min(...positions);
+          if (span < 60) sc += 15;
+        }
+      }
 
-    // Pak de beste 1-2 zinnen (max 280 chars samen)
-    const sorted = [...scored].sort((a, b) => b.sc - a.sc);
-    const best = sorted.slice(0, 2);
-    // Herstel originele volgorde
-    best.sort((a, b) => a.start - b.start);
+      sentences.push({ text: s, score: sc, start: m.index });
+    }
 
+    if (sentences.length === 0) return Search._rawSnippet(text, -1);
+
+    // Sorteer op score, pak de beste 2
+    const sorted = [...sentences].sort((a, b) => b.score - a.score);
+    const best = sorted.slice(0, 2).sort((a, b) => a.start - b.start);
     let snippet = best.map(s => s.text).join(' ').trim();
     if (snippet.length > 280) snippet = snippet.slice(0, 277) + '…';
-    if (snippet.length < 20) snippet = Search._rawSnippet(text, matchOffset);
-
-    // Voeg ellipsis toe indien niet begin van tekst
-    const firstStart = best[0]?.start || 0;
-    if (firstStart > 50) snippet = '…' + snippet;
-
+    if (snippet.length < 15) snippet = Search._rawSnippet(text, -1);
+    if (best[0]?.start > 60) snippet = '…' + snippet;
     return snippet;
   },
 
@@ -3302,28 +3471,21 @@ const Search = {
     return snip;
   },
 
-  // Detecteer juridische zoekopdrachten
   _isJuridischeQuery(qLower) {
     return /\b(art(?:ikel)?|lid|wet|sv|awb|bes|straf|aanhouding|verdacht|politie|bevoegd|vergunning|handhav)\b/.test(qLower);
   },
 
-  // Legacy buildSnippet (behoud voor niet-chunk paden)
+  // Legacy buildSnippet (behoud voor compatibiliteit)
   buildSnippet(content, offset, firstWord) {
     if (!content || content.length === 0) return '';
-    const useOffset = offset === -1 ? 0 : Math.max(0, offset - CFG.SNIPPET_CONTEXT);
-    const end = Math.min(content.length, useOffset + CFG.SNIPPET_LENGTH);
+    const useOffset = offset === -1 ? 0 : Math.max(0, offset - 120);
+    const end = Math.min(content.length, useOffset + 280);
     let snippet = content.slice(useOffset, end);
     if (useOffset > 0) snippet = '…' + snippet;
     if (end < content.length) snippet += '…';
     return snippet;
   },
 };
-
-/* ============================================================
-   SECTION 6b: SEARCH CONTEXT MANAGER (v6)
-   Beheert de actieve zoekopdracht centraal.
-   ============================================================ */
-const SearchContext = {
 
   /**
    * Sla een nieuwe zoekopdracht op in State.
@@ -4253,7 +4415,8 @@ const Upload = {
         if (el) el.style.width = '100%';
 
         State.documents.unshift(doc);
-        await Storage.saveOne(doc); // sla één doc op via IndexedDB (async)
+        await Storage.saveOne(doc);
+        QueryCache.invalidate(); // #9: invalideer cache na nieuwe upload
         item.status = 'done';
 
       } catch(e) {
@@ -4524,17 +4687,35 @@ const Events = {
     // Topbar search
     const mainSearch = document.getElementById('mainSearch');
     const searchClear = document.getElementById('searchClear');
+
+    // #1 Debounce + cancelable search — nooit twee searches tegelijk
+    let _searchTimer = null;
+    let _searchRunning = false;
+    function _runSearch(q, source) {
+      if (_searchTimer) clearTimeout(_searchTimer);
+      _searchTimer = setTimeout(() => {
+        if (_searchRunning) return; // vorige nog bezig, skip
+        _searchRunning = true;
+        try {
+          SearchContext.set(q, source);
+          const results = Search.query(q, State.searchFilter);
+          Render.searchResults(results, q);
+        } finally {
+          _searchRunning = false;
+        }
+      }, 180); // 180ms debounce
+    }
+
     mainSearch.addEventListener('input', () => {
       const q = mainSearch.value;
       searchClear.classList.toggle('visible', q.length > 0);
       if (q.trim().length > 0) {
-        SearchContext.set(q.trim(), 'topbar');
         document.getElementById('searchView').value = q;
         UI.showView('zoeken');
-        const results = Search.query(q, State.searchFilter);
-        Render.searchResults(results, q.trim());
+        _runSearch(q.trim(), 'topbar');
       } else {
         SearchContext.reset();
+        if (_searchTimer) clearTimeout(_searchTimer);
       }
     });
     searchClear.addEventListener('click', () => {
@@ -4542,6 +4723,7 @@ const Events = {
       document.getElementById('searchView').value = '';
       searchClear.classList.remove('visible');
       SearchContext.reset();
+      if (_searchTimer) clearTimeout(_searchTimer);
     });
 
     // Search view
@@ -4551,11 +4733,10 @@ const Events = {
       mainSearch.value = q;
       document.getElementById('searchClear').classList.toggle('visible', q.length > 0);
       if (q.trim().length > 0) {
-        SearchContext.set(q.trim(), 'search-view');
-        const results = Search.query(q, State.searchFilter);
-        Render.searchResults(results, q.trim());
+        _runSearch(q.trim(), 'search-view');
       } else {
         SearchContext.reset();
+        if (_searchTimer) clearTimeout(_searchTimer);
         document.getElementById('search-results-section').style.display = 'none';
         document.getElementById('search-empty').style.display = 'none';
         document.getElementById('search-initial').style.display = '';
