@@ -1193,6 +1193,10 @@ mark.highlight {
   border-bottom: 1px solid var(--gray-100);
   flex-shrink: 0;
 }
+.law-sidebar-count-badge { font-size:10px; background:var(--blue-100,#dbeafe); color:var(--blue-600,#2563eb); padding:1px 6px; border-radius:10px; margin-left:4px; font-weight:600; }
+.law-toc-search-wrap { padding:6px 10px; border-bottom:1px solid var(--gray-100); flex-shrink:0; }
+.law-toc-search { width:100%; box-sizing:border-box; padding:5px 8px; font-size:12px; border:1px solid var(--gray-200); border-radius:6px; background:var(--gray-50,#f9fafb); color:var(--gray-700,#374151); outline:none; }
+.law-toc-search:focus { border-color:var(--blue-400,#60a5fa); background:#fff; }
 .law-art-btn {
   display: flex;
   align-items: center;
@@ -1578,6 +1582,14 @@ mark.highlight {
   border: 1px solid rgba(201,168,76,0.25);
   text-transform: uppercase;
 }
+@media print {
+  body > *:not(#docModal) { display:none !important; }
+  #docModal { display:block !important; position:static !important; background:white !important; box-shadow:none !important; }
+  .modal-header,.modal-close-btn,.modal-actions,.modal-law-sidebar,.law-toc-search-wrap { display:none !important; }
+  .modal-law-content { overflow:visible !important; max-height:none !important; }
+}
+
+.parse-warn-badge { display:inline-flex; align-items:center; gap:2px; font-size:9px; font-weight:700; padding:2px 6px; border-radius:4px; background:rgba(234,88,12,0.1); color:#c2410c; border:1px solid rgba(234,88,12,0.2); cursor:help; }
 </style>
 </head>
 <body>
@@ -2788,7 +2800,7 @@ const LawParser = {
 
     // Safety: limit iterations
     let iterations = 0;
-    const MAX_ITER = 500;
+    const MAX_ITER = 9999; // verhoogd van 500 — BES-wetboeken hebben 500+ artikelen
 
     while ((match = ARTICLE_RE.exec(content)) !== null && iterations++ < MAX_ITER) {
       const raw = match[1] || '';
@@ -2826,19 +2838,38 @@ const LawParser = {
       const end = i + 1 < positions.length ? positions[i + 1].startIndex : content.length;
       const rawContent = content.slice(start, end).trim();
 
-      // Extract members from within this article block
-      const members = LawParser.extractMembers(rawContent);
+      // P3: sanity-check — onredelijk grote artikelen zijn boundary-bugs
+      const MAX_ARTICLE_LEN = 15000;
+      let finalContent = rawContent;
+      let parseWarning = null;
+      if (rawContent.length > MAX_ARTICLE_LEN) {
+        parseWarning = `Artikel ${positions[i].num} onredelijk groot (${rawContent.length} tekens) — mogelijke boundary-bug`;
+        try {
+          const fbRe = /(?:^|\n)((?:art(?:ikel)?\.?\s*)(\d+[a-z]?)(?:[^\n]{0,60})?)(?=\n)/gim;
+          let fb; let fbIter = 0; const subPos = [];
+          while ((fb = fbRe.exec(rawContent)) !== null && fbIter++ < 200) {
+            const fbNum = (fb[2] || '').trim();
+            if (!fbNum || fbNum === positions[i].num) continue;
+            subPos.push(start + fb.index);
+          }
+          if (subPos.length > 0) {
+            finalContent = content.slice(start, subPos[0]).trim();
+            parseWarning += ` → afgekapt tot ${finalContent.length} tekens`;
+          }
+        } catch(eF) { /* fallback mislukt — origineel behouden */ }
+        console.warn('[LawParser]', parseWarning);
+      }
 
-      articles.push({
-        id: positions[i].id,
-        num: positions[i].num,
-        law: positions[i].law,
-        title: positions[i].title,
-        content: rawContent, // GEEN cap — volledige artikelinhoud
-        startIndex: start,
-        endIndex: end,
-        members,
-      });
+      // Extract members from within this article block
+      const members = LawParser.extractMembers(finalContent);
+
+      const artObj = {
+        id: positions[i].id, num: positions[i].num, law: positions[i].law,
+        title: positions[i].title, content: finalContent,
+        startIndex: start, endIndex: end, members,
+      };
+      if (parseWarning) artObj.parseWarning = parseWarning;
+      articles.push(artObj);
     }
 
     return articles;
@@ -2881,18 +2912,34 @@ const LawParser = {
       return members;
     }
 
-    // 2) Fallback: genummerde onderdelen "1. ...", "2. ..."
-    const numberedRe = /(?:^|\n)\s*(\d+)\.\s+(.{1,1200})(?=(?:\n\s*\d+\.\s+)|$)/g;
+    // 2) P2: BES-stijl: 1°., 2°., 1bis°., 1ter°.
+    const besOrdinalRe = /(?:^|\n)\s*(\d+(?:bis|ter|quater|quinquies)?)[°º]\.\s*/gm;
+    const besMarkers = [];
+    guard = 0;
+    while ((m = besOrdinalRe.exec(articleText)) !== null && guard++ < 200) {
+      const raw = (m[1] || '').trim();
+      if (!raw) continue;
+      besMarkers.push({ num: raw, start: m.index, markerLen: m[0].length });
+    }
+    if (besMarkers.length > 0) {
+      for (let i = 0; i < besMarkers.length; i++) {
+        const startContent = besMarkers[i].start + besMarkers[i].markerLen;
+        const endContent = i + 1 < besMarkers.length ? besMarkers[i + 1].start : articleText.length;
+        const content = articleText.slice(startContent, endContent).replace(/\s+/g, ' ').trim();
+        if (content.length < 3) continue;
+        members.push({ id: `lid ${besMarkers[i].num}°`, content, subparts: LawParser.extractSubparts(content) });
+      }
+      return members;
+    }
+
+    // 3) Fallback: genummerde onderdelen "1. ...", "2. ..." of tab-variant
+    const numberedRe = /(?:^|\n)[\t\s]*(\d+)\.(?:\t|\s)+(.{1,1200})(?=(?:\n[\t\s]*\d+\.(?:\t|\s))|$)/g;
     guard = 0;
     while ((m = numberedRe.exec(articleText)) !== null && guard++ < 40) {
       const num = m[1];
       const content = (m[2] || '').replace(/\s+/g, ' ').trim();
       if (content.length < 5) continue;
-      members.push({
-        id: `lid ${num}`,
-        content,
-        subparts: LawParser.extractSubparts(content),
-      });
+      members.push({ id: `lid ${num}`, content, subparts: LawParser.extractSubparts(content) });
     }
     return members;
   },
@@ -3053,6 +3100,44 @@ const LawParser = {
     const law = m[2] && LawParser.LAW_ABBR.test(m[2]) ? m[2] : '';
     if (!num) return null;
     return { isArticleQuery: true, num, law };
+  },
+
+  detectLawAbbr(doc) {
+    if (!doc) return '';
+    const full = (doc.title || '') + ' ' + (doc.content || '').substring(0, 500);
+    const PATTERNS = [
+      { re: /wvsv\s+bes|wetboek\s+van\s+strafvordering\s+bes|w\.v\.sv/i,  abbr: 'Sv'  },
+      { re: /wvsr\s+bes|wetboek\s+van\s+strafrecht\s+bes|w\.v\.sr/i,      abbr: 'Sr'  },
+      { re: /\bawb\b|algemene\s+wet\s+bestuursrecht/i,                     abbr: 'Awb' },
+      { re: /\bapv\b|algemene\s+plaatselijke\s+verordening/i,              abbr: 'APV' },
+      { re: /\bwed\b|wet\s+op\s+de\s+economische\s+delicten/i,            abbr: 'WED' },
+      { re: /\bevrm\b|europees\s+verdrag\s+.*rechten\s+van\s+de\s+mens/i, abbr: 'EVRM'},
+      { re: /\bpolitiewet\b|\bpw\b/i,                                      abbr: 'Pw'  },
+      { re: /\bbes\b/i,                                                     abbr: 'BES' },
+    ];
+    for (const { re, abbr } of PATTERNS) { if (re.test(full)) return abbr; }
+    return '';
+  },
+
+  applyLawAbbr(doc) {
+    if (!doc || !doc.articles || doc.articles.length === 0) return;
+    const alreadyTagged = doc.articles.some(a => !!a.law);
+    if (alreadyTagged) return;
+    const abbr = LawParser.detectLawAbbr(doc);
+    if (!abbr) return;
+    doc.detectedLaw = abbr;
+    for (const art of doc.articles) {
+      art.law   = abbr;
+      art.id    = `${art.num}_${abbr}`;
+      art.title = `Artikel ${art.num} ${abbr}`;
+    }
+    if (doc.references && doc.references.length > 0) {
+      for (const ref of doc.references) {
+        if (ref.from && !ref.from.includes('_')) ref.from = `${ref.from}_${abbr}`;
+        if (ref.to   && !ref.to.includes('_'))   ref.to   = `${ref.to}_${abbr}`;
+      }
+    }
+    console.info('[LawParser] Wet-afkorting:', abbr, doc.title);
   },
 };
 
@@ -3535,6 +3620,9 @@ const QueryParser = {
     'opsporingsambtenaar', 'straf', 'boete', 'hechtenis', 'gevangenisstraf',
     'heterdaad', 'staandehouding', 'verhoor', 'cautie', 'bewijsuitsluiting',
     'misdrijf', 'medeplichtigheid', 'medeplegen', 'vergunning', 'ontheffing',
+    'fouillering', 'fouilleren', 'identiteitsfouillering', 'staandehouden',
+    'inverzekeringstelling', 'inbewaringstelling', 'dwangmiddel',
+    'wederspannigheid', 'vordering', 'ambtsdwang', 'hulpofficier',
   ],
 
   // Patroon: "artikel 9", "art. 52", "9 politiewet", "artikel 9 sv"
@@ -3615,9 +3703,11 @@ const QueryParser = {
     const t = (token || '').trim();
     if (!t) return '';
     if (QueryParser.TERM_ALIASES[t]) return QueryParser.TERM_ALIASES[t];
-    // Zeer lichte NL-stemming, veilig voor zoekdoeleinden
-    if (t.length > 5 && t.endsWith('en')) return t.slice(0, -2);
-    if (t.length > 4 && t.endsWith('s')) return t.slice(0, -1);
+    // P5: juridische kernwoorden niet afkorten
+    if (QueryParser.LEGAL_LEXICON.includes(t)) return t;
+    // Lichte NL-stemming
+    if (t.length > 5 && t.endsWith('en')) { const s = t.slice(0,-2); if (s.length >= 4) return s; }
+    if (t.length > 4 && t.endsWith('s'))  { const s = t.slice(0,-1); if (s.length >= 4) return s; }
     return t;
   },
 
@@ -4495,6 +4585,8 @@ const Render = {
     if (doc.searchable && doc.content && !doc.articles) LawParser.parse(doc);
     const artCount = (doc.articles && doc.articles.length > 0)
       ? `<span class="art-badge">⚖ ${doc.articles.length} art.</span>` : '';
+    const _warnN = (doc.articles || []).filter(a => !!a.parseWarning).length;
+    const warnBadge = _warnN > 0 ? `<span class="parse-warn-badge" title="${_warnN} artikel(en) met mogelijke parseerfouten">⚠ ${_warnN}</span>` : '';
 
     return `<div class="doc-card ${cardClass}" data-docid="${Util.esc(doc.id)}" role="article" tabindex="0">
       <div class="doc-card-header">
@@ -4502,6 +4594,7 @@ const Render = {
           <span class="doc-type-badge badge-${badgeClass}">${icon} ${doc.type.toUpperCase()}</span>
           ${parseBadge}
           ${artCount}
+          ${warnBadge}
         </div>
         <span class="cat-tag ${catClass}">${catLabel}</span>
       </div>
@@ -4831,8 +4924,10 @@ const Render = {
 
     return `<div class="modal-law-layout">
       <div class="modal-law-sidebar" role="navigation" aria-label="Artikelnavigatie">
-        <div class="law-sidebar-header">Artikelen</div>
-        <div class="law-sidebar-count">⚖ ${articles.length} gevonden</div>
+        <div class="law-sidebar-header">Artikelen <span class="law-sidebar-count-badge">${articles.length}</span></div>
+        <div class="law-toc-search-wrap">
+          <input type="search" id="tocSearch" class="law-toc-search" placeholder="Filter artikel…" aria-label="Filter artikelen" autocomplete="off" />
+        </div>
         ${sidebarItems}
       </div>
       <div class="modal-law-content" id="lawContentPanel" role="region" aria-label="Artikelinhoud">
@@ -4842,6 +4937,17 @@ const Render = {
   },
 
   bindLawLayoutEvents(doc, container) {
+    // P6: TOC zoekbalk
+    const tocSearch = container.querySelector('#tocSearch');
+    if (tocSearch) {
+      tocSearch.addEventListener('input', () => {
+        const q = tocSearch.value.trim().toLowerCase();
+        container.querySelectorAll('.law-art-btn').forEach(btn => {
+          const txt = btn.textContent.toLowerCase();
+          btn.style.display = (!q || txt.includes(q)) ? '' : 'none';
+        });
+      });
+    }
     // Sidebar article buttons
     container.querySelectorAll('[data-artbtn]').forEach(btn => {
       btn.addEventListener('click', e => {
@@ -5017,7 +5123,14 @@ const Upload = {
     btn.disabled = true;
     btn.textContent = 'Bezig…';
 
-    const category = document.querySelector('input[name="category"]:checked')?.value || 'overig';
+    const _rawCat = document.querySelector('input[name="category"]:checked')?.value || 'overig';
+    // P4: auto-categorisatie op bestandsnaam als gebruiker 'overig' heeft gekozen
+    const category = (() => {
+      if (_rawCat !== 'overig') return _rawCat;
+      const _fn = (pending[0]?.file?.name || '').toLowerCase();
+      if (/wetboek|wvsv|wvsr|\bawb\b|\bapv\b|\bbes\b|verordening|besluit|regeling|politiewet|strafwet/i.test(_fn)) return 'wetgeving';
+      return 'overig';
+    })();
 
     for (const item of pending) {
       item.status = 'processing';
@@ -5046,6 +5159,11 @@ const Upload = {
 
         await Parser.parse(item.file, doc);
 
+        // P1: koppel wet-afkorting na parsing
+        if (doc.searchable && doc.content) {
+          try { LawParser.parse(doc); LawParser.applyLawAbbr(doc); } catch(e) { console.warn('[Upload] LawParser:', e.message); }
+        }
+
         // Bouw chunks direct na parsing (Fase A)
         if (doc.searchable && doc.content) {
           ChunkEngine.build(doc);
@@ -5062,6 +5180,13 @@ const Upload = {
         const el = progEl();
         if (el) el.style.width = '100%';
 
+        // P4: deduplicatie-check
+        const _isDup = State.documents.some(d => d.id !== doc.id && d.originalFileName === doc.originalFileName && d.size === doc.size);
+        if (_isDup) {
+          console.warn('[Upload] Duplicaat:', doc.originalFileName);
+          UI.toast(`Duplicaat overgeslagen: ${doc.originalFileName} bestaat al.`, 'warning');
+          item.status = 'done'; continue;
+        }
         State.documents.unshift(doc);
         // Cross-document resolver bijwerken (niet-blokkerend voor uploadflow)
         try { CrossDocResolver.resolveAll(State.documents); } catch(e) { /* non-blocking */ }
@@ -5430,6 +5555,50 @@ const ValidationRunner = {
     ValidationRunner._assert(typeof Render?.openModal === 'function', 'Runtime: Render.openModal bestaat');
   },
 
+  _runNewFeaturesValidation(docs) {
+    const dSv = docs.find(d => d.id === 'val_sv');
+
+    // P1: detectLawAbbr
+    const a1 = LawParser.detectLawAbbr({ title: 'WvSv BES', content: '', articles: [] });
+    ValidationRunner._assert(a1 === 'Sv', 'P1: detectLawAbbr WvSv BES → Sv', 'got:' + a1);
+    const a2 = LawParser.detectLawAbbr({ title: 'WvSr BES', content: '', articles: [] });
+    ValidationRunner._assert(a2 === 'Sr', 'P1: detectLawAbbr WvSr BES → Sr', 'got:' + a2);
+    const a3 = LawParser.detectLawAbbr({ title: 'APV Bonaire 2023', content: '', articles: [] });
+    ValidationRunner._assert(a3 === 'APV', 'P1: detectLawAbbr APV → APV', 'got:' + a3);
+
+    // P1: applyLawAbbr
+    LawParser.parse(dSv);
+    (dSv.articles || []).forEach(a => { a.law = ''; a.id = a.num; });
+    dSv.title = 'WvSv BES'; dSv.detectedLaw = undefined;
+    LawParser.applyLawAbbr(dSv);
+    ValidationRunner._assert((dSv.articles || []).every(a => a.law === 'Sv'), 'P1: applyLawAbbr koppelt Sv');
+    LawParser.applyLawAbbr(dSv); // idempotent
+    ValidationRunner._assert((dSv.articles || []).every(a => a.law === 'Sv'), 'P1: applyLawAbbr idempotent');
+
+    // P2: BES °-nummering
+    const b1 = LawParser.extractMembers('Artikel 4\n1°.\teerste;\n2°.\ttweede;\n3°.\tderde.');
+    ValidationRunner._assert(b1.length >= 3, 'P2: BES 1°. lid-extractie', 'got:' + b1.length);
+    const b2 = LawParser.extractMembers('Artikel 5\n1°.\teerste.\n1bis°.\tbis.\n2°.\ttweede.');
+    ValidationRunner._assert(b2.some(m => m.id === 'lid 1bis°'), 'P2: BES 1bis°. herkend');
+    const b3 = LawParser.extractMembers('Artikel 52\n1. eerste lid\n2. tweede lid\n3. derde lid');
+    ValidationRunner._assert(b3.length >= 3, 'P2: standaard 1. 2. 3. intact', 'got:' + b3.length);
+
+    // P3: boundary sanity-check
+    const bigC = 'Artikel 1\n\n' + 'x '.repeat(8000) + '\nArtikel 2\nKort.';
+    const bigA = LawParser.extractArticles(bigC);
+    const art1 = bigA.find(a => a.num === '1');
+    ValidationRunner._assert(!!(art1 && art1.parseWarning), 'P3: groot artikel krijgt parseWarning');
+
+    // P4: auto-cat regex
+    const r4 = /wetboek|wvsv|wvsr|\bawb\b|\bapv\b|\bbes\b|verordening|besluit|regeling|politiewet|strafwet/i;
+    ValidationRunner._assert(r4.test('WvSv BES.txt'), 'P4: auto-cat WvSv BES');
+    ValidationRunner._assert(!r4.test('les presentatie.pptx'), 'P4: auto-cat presentatie overig');
+
+    // P5: fouillering niet afgekapt
+    ValidationRunner._assert(QueryParser.normalizeToken('fouillering') === 'fouillering', 'P5: fouillering intact');
+    ValidationRunner._assert(QueryParser.normalizeToken('hulpofficier') === 'hulpofficier', 'P5: hulpofficier intact');
+  },
+
   async runAll(opts = {}) {
     const { logSummary = true } = opts;
     ValidationRunner._results = [];
@@ -5441,6 +5610,7 @@ const ValidationRunner = {
       ValidationRunner._runReferenceValidation(fixtures);
       ValidationRunner._runCrossDocValidation(fixtures);
       await ValidationRunner._runSearchValidation(fixtures);
+      ValidationRunner._runNewFeaturesValidation(fixtures); // P9
     } catch (e) {
       ValidationRunner._record(false, 'Validation runner crash', e.message || String(e));
     }
@@ -5487,6 +5657,21 @@ const Events = {
       if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('[data-view][role="button"]')) {
         e.preventDefault();
         UI.showView(e.target.dataset.view);
+      }
+    });
+
+    // P7: globale keyboard shortcuts
+    document.addEventListener('keydown', e => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+        e.preventDefault();
+        const si = document.getElementById('mainSearch') || document.getElementById('searchView');
+        if (si) { UI.showView('zoeken'); setTimeout(() => si.focus(), 50); }
+      } else if (e.key === 'Escape') {
+        const m = document.getElementById('docModal');
+        if (m && m.style.display !== 'none' && m.style.display !== '') Render.closeModal();
+      } else if ((e.ctrlKey || e.metaKey) && e.key === 'p') {
+        const m = document.getElementById('docModal');
+        if (m && m.style.display !== 'none' && m.style.display !== '') { e.preventDefault(); window.print(); }
       }
     });
 
@@ -6011,6 +6196,9 @@ async function init() {
     for (const doc of State.documents) {
       if (!doc.searchable || !doc.content) continue;
       try {
+        // P1: herstel wet-afkorting voor eerder geladen docs
+        if (!doc.articles || doc.articles.length === 0) { try { LawParser.parse(doc); } catch(e) {} }
+        try { LawParser.applyLawAbbr(doc); } catch(e) {}
         ChunkEngine.build(doc);
         const alreadyIndexed = await InvertedIndex.checkIndexed(doc.id);
         if (!alreadyIndexed && doc._chunks && doc._chunks.length > 0) {
