@@ -3790,38 +3790,6 @@ const Search = {
   },
 };
 
-  /**
-   * Sla een nieuwe zoekopdracht op in State.
-   * @param {string} query  - de volledige zoekstring
-   * @param {string} source - 'search-view' | 'topbar'
-   */
-  set(query, source) {
-    const q = (query || '').trim();
-    State.searchContext = {
-      query: q,
-      terms: SearchContext.tokenize(q),
-      source: source || null,
-      active: q.length > 0,
-    };
-  },
-
-  /** Reset de zoekcontext (bijv. bij navigatie weg van zoeken) */
-  reset() {
-    State.searchContext = { query: '', terms: [], source: null, active: false };
-  },
-
-  /** Splits zoekopdracht in genormaliseerde tokens (min 2 tekens) */
-  tokenize(query) {
-    if (!query) return [];
-    return query.trim().toLowerCase().split(/\s+/).filter(w => w.length >= 2);
-  },
-
-  /** Geeft aan of er een actieve, bruikbare zoekcontext is */
-  isActive() {
-    return State.searchContext.active && State.searchContext.terms.length > 0;
-  },
-};
-
 /* ============================================================
    SECTION 6c: HIGHLIGHT ENGINE (v6)
    Veilige, robuuste zoekterm-highlighting voor de modal.
