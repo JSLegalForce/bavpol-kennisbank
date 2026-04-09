@@ -1624,7 +1624,7 @@ mark.highlight {
   </div>
 
   <div class="sidebar-footer">
-    <span class="sidebar-version">Kennisbank BAVPOL · v9.0</span>
+    <span class="sidebar-version">Kennisbank BAVPOL · v10.0</span>
   </div>
 </nav>
 
@@ -2005,16 +2005,13 @@ function createDoc(overrides) {
    ---------------------------------------------------------- */
 const IDB = {
   DB_NAME: 'BAVPOL_DB',
-  DB_VERSION: 1,
+  DB_VERSION: 2,          // v2: voegt 'index' store toe
   STORE_DOCS: 'documents',
   STORE_SETTINGS: 'settings',
+  STORE_INDEX: 'index',   // inverted index: term → postings
 
-  _db: null,   // gecachte database instantie
+  _db: null,
 
-  /**
-   * Open (of hergebruik) de IndexedDB database.
-   * @returns {Promise<IDBDatabase>}
-   */
   open() {
     if (IDB._db) return Promise.resolve(IDB._db);
     return new Promise((resolve, reject) => {
@@ -2026,14 +2023,18 @@ const IDB = {
 
       req.onupgradeneeded = (e) => {
         const db = e.target.result;
-        // Object store: documents (één record per document, inclusief volledige content)
         if (!db.objectStoreNames.contains(IDB.STORE_DOCS)) {
           db.createObjectStore(IDB.STORE_DOCS, { keyPath: 'id' });
         }
-        // Object store: settings (key-value)
         if (!db.objectStoreNames.contains(IDB.STORE_SETTINGS)) {
           db.createObjectStore(IDB.STORE_SETTINGS, { keyPath: 'key' });
         }
+        // Nieuw in v2: inverted index store
+        // key = genormaliseerde term, value = { term, postings: [{docId,chunkIdx,tf,artHint}] }
+        if (!db.objectStoreNames.contains(IDB.STORE_INDEX)) {
+          db.createObjectStore(IDB.STORE_INDEX, { keyPath: 'term' });
+        }
+        console.info('[IDB] Schema upgrade naar v2: index store aangemaakt');
       };
 
       req.onsuccess = (e) => {
@@ -2129,11 +2130,82 @@ const IDB = {
    */
   clearAll() {
     return IDB.open().then(db => new Promise((resolve, reject) => {
-      const tx = db.transaction([IDB.STORE_DOCS, IDB.STORE_SETTINGS], 'readwrite');
-      tx.objectStore(IDB.STORE_DOCS).clear();
-      tx.objectStore(IDB.STORE_SETTINGS).clear();
+      const stores = [IDB.STORE_DOCS, IDB.STORE_SETTINGS, IDB.STORE_INDEX];
+      const tx = db.transaction(stores, 'readwrite');
+      stores.forEach(s => tx.objectStore(s).clear());
       tx.oncomplete = () => resolve();
       tx.onerror = (e) => reject(e.target.error);
+    }));
+  },
+
+  // --- Inverted index methodes ---
+
+  /**
+   * Schrijf een batch van index-entries atomair.
+   * entries = [{ term, postings: [{docId, chunkIdx, tf, artHint}] }]
+   */
+  putIndexEntries(entries) {
+    if (!entries || entries.length === 0) return Promise.resolve();
+    return IDB.open().then(db => new Promise((resolve, reject) => {
+      const tx = db.transaction(IDB.STORE_INDEX, 'readwrite');
+      const store = tx.objectStore(IDB.STORE_INDEX);
+      let pending = entries.length;
+      for (const entry of entries) {
+        // Merge met bestaande postings voor deze term
+        const getReq = store.get(entry.term);
+        getReq.onsuccess = (e) => {
+          const existing = e.target.result;
+          let postings = existing ? existing.postings : [];
+          // Verwijder oude postings voor dezelfde docId (bij re-index)
+          const docIds = new Set(entry.postings.map(p => p.docId));
+          postings = postings.filter(p => !docIds.has(p.docId));
+          postings.push(...entry.postings);
+          store.put({ term: entry.term, postings });
+          pending--;
+          if (pending === 0) resolve();
+        };
+        getReq.onerror = () => { pending--; if (pending === 0) resolve(); };
+      }
+      tx.onerror = (e) => reject(e.target.error);
+    }));
+  },
+
+  /**
+   * Haal postings op voor een term.
+   * @returns {Promise<{term, postings}|null>}
+   */
+  getIndexEntry(term) {
+    return IDB.open().then(db => new Promise((resolve, reject) => {
+      const tx = db.transaction(IDB.STORE_INDEX, 'readonly');
+      const req = tx.objectStore(IDB.STORE_INDEX).get(term);
+      req.onsuccess = (e) => resolve(e.target.result || null);
+      req.onerror = (e) => reject(e.target.error);
+    }));
+  },
+
+  /**
+   * Verwijder alle index-entries voor een document (bij verwijdering).
+   * Aanpak: scan alle entries en filter docId eruit (batch update).
+   */
+  removeDocFromIndex(docId) {
+    return IDB.open().then(db => new Promise((resolve, reject) => {
+      const tx = db.transaction(IDB.STORE_INDEX, 'readwrite');
+      const store = tx.objectStore(IDB.STORE_INDEX);
+      const req = store.openCursor();
+      req.onsuccess = (e) => {
+        const cursor = e.target.result;
+        if (!cursor) { resolve(); return; }
+        const entry = cursor.value;
+        const filtered = entry.postings.filter(p => p.docId !== docId);
+        if (filtered.length === 0) {
+          cursor.delete();
+        } else if (filtered.length !== entry.postings.length) {
+          cursor.update({ term: entry.term, postings: filtered });
+        }
+        cursor.continue();
+      };
+      req.onerror = (e) => reject(e.target.error);
+      tx.oncomplete = () => resolve();
     }));
   },
 };
@@ -2255,7 +2327,9 @@ const Storage = {
    */
   async remove(id) {
     State.documents = State.documents.filter(d => d.id !== id);
-    QueryCache.invalidate(); // cache invalide na verwijdering
+    QueryCache.invalidate();
+    // Verwijder uit inverted index (v10)
+    InvertedIndex.removeDoc(id).catch(e => console.warn('[Index] Remove fout:', e.message));
     if (Storage._idbAvailable) {
       try {
         await IDB.deleteDoc(id);
@@ -3050,6 +3124,173 @@ const ChunkEngine = {
 
 
 /* ============================================================
+   SECTION 6a: INVERTED INDEX ENGINE (v10)
+   Bouwt een term→postings index per document.
+   Opgeslagen in IndexedDB STORE_INDEX.
+   Maakt Search O(1) per term i.p.v. O(N*chunks).
+   ============================================================ */
+const InvertedIndex = {
+
+  // In-memory cache van geladen index-entries voor huidige sessie
+  // term → [{docId, chunkIdx, tf, artHint}]
+  _cache: new Map(),
+
+  // Set van docIds waarvoor de index al gebouwd is (in IDB)
+  _indexed: new Set(),
+
+  /**
+   * Bouw de index voor één document en sla op in IndexedDB.
+   * Wordt aangeroepen na upload + chunking.
+   * @param {object} doc  — document met doc._chunks beschikbaar
+   * @returns {Promise<void>}
+   */
+  async buildForDoc(doc) {
+    if (!doc || !doc._chunks || doc._chunks.length === 0) return;
+    if (InvertedIndex._indexed.has(doc.id)) return; // al geïndexeerd
+
+    const t0 = Date.now();
+    // term → [{docId, chunkIdx, tf, artHint}]
+    const termMap = new Map();
+
+    for (const chunk of doc._chunks) {
+      // Tokeniseer chunk text
+      const tokens = InvertedIndex._tokenize(chunk.text);
+      const freq = new Map();
+      for (const tok of tokens) {
+        freq.set(tok, (freq.get(tok) || 0) + 1);
+      }
+      const totalTokens = tokens.length || 1;
+
+      for (const [term, count] of freq) {
+        if (!termMap.has(term)) termMap.set(term, []);
+        termMap.get(term).push({
+          docId: doc.id,
+          chunkIdx: chunk.idx,
+          tf: count / totalTokens,       // term frequency in dit chunk
+          artHint: chunk.artHint || null,
+        });
+      }
+    }
+
+    // Schrijf naar IDB in batches van 200 termen
+    const entries = Array.from(termMap.entries()).map(([term, postings]) => ({ term, postings }));
+    const BATCH = 200;
+    for (let i = 0; i < entries.length; i += BATCH) {
+      try {
+        await IDB.putIndexEntries(entries.slice(i, i + BATCH));
+      } catch(e) {
+        console.warn('[Index] Schrijffout batch', i, e.message);
+      }
+    }
+
+    // Update in-memory cache
+    for (const { term, postings } of entries) {
+      if (!InvertedIndex._cache.has(term)) {
+        InvertedIndex._cache.set(term, postings);
+      } else {
+        // Merge — verwijder oude voor dit docId eerst
+        const existing = InvertedIndex._cache.get(term).filter(p => p.docId !== doc.id);
+        InvertedIndex._cache.set(term, [...existing, ...postings]);
+      }
+    }
+
+    InvertedIndex._indexed.add(doc.id);
+    const elapsed = Date.now() - t0;
+    console.info(`[Index] "${doc.title}" geïndexeerd: ${termMap.size} termen, ${doc._chunks.length} chunks — ${elapsed}ms`);
+  },
+
+  /**
+   * Verwijder alle index-entries voor een document.
+   * @param {string} docId
+   * @returns {Promise<void>}
+   */
+  async removeDoc(docId) {
+    try {
+      await IDB.removeDocFromIndex(docId);
+    } catch(e) {
+      console.warn('[Index] Verwijder fout:', e.message);
+    }
+    // Verwijder uit memory cache
+    for (const [term, postings] of InvertedIndex._cache) {
+      const filtered = postings.filter(p => p.docId !== docId);
+      if (filtered.length === 0) InvertedIndex._cache.delete(term);
+      else InvertedIndex._cache.set(term, filtered);
+    }
+    InvertedIndex._indexed.delete(docId);
+    console.info('[Index] Entries verwijderd voor doc:', docId);
+  },
+
+  /**
+   * Laad index-entries voor een set termen (lazy, gecached).
+   * @param {string[]} terms
+   * @returns {Promise<Map<string, Array>>}  term → postings
+   */
+  async lookup(terms) {
+    const result = new Map();
+    const toLoad = [];
+
+    for (const term of terms) {
+      if (InvertedIndex._cache.has(term)) {
+        result.set(term, InvertedIndex._cache.get(term));
+      } else {
+        toLoad.push(term);
+      }
+    }
+
+    if (toLoad.length > 0) {
+      await Promise.all(toLoad.map(async term => {
+        try {
+          const entry = await IDB.getIndexEntry(term);
+          const postings = entry ? entry.postings : [];
+          InvertedIndex._cache.set(term, postings);
+          result.set(term, postings);
+        } catch(e) {
+          result.set(term, []);
+        }
+      }));
+    }
+
+    return result;
+  },
+
+  /**
+   * Tokeniseer een tekst naar genormaliseerde termen (min 2 tekens).
+   */
+  _tokenize(text) {
+    if (!text) return [];
+    return QueryParser.normalize(text)
+      .split(/[\s\-_,.;:!?()\[\]{}"'\/\\]+/)
+      .filter(w => w.length >= 2);
+  },
+
+  /**
+   * Controleer of een document al geïndexeerd is in IDB.
+   * Wordt gebruikt bij laden van bestaande documenten.
+   */
+  async checkIndexed(docId) {
+    if (InvertedIndex._indexed.has(docId)) return true;
+    // Doe een sample-lookup om te zien of er data is
+    // (we controleren een vaste sentinel key per doc)
+    const sentinelKey = '__doc__' + docId;
+    try {
+      const entry = await IDB.getIndexEntry(sentinelKey);
+      if (entry) { InvertedIndex._indexed.add(docId); return true; }
+    } catch(e) { /* niet kritiek */ }
+    return false;
+  },
+
+  /**
+   * Schrijf een sentinel voor een document zodat checkIndexed werkt.
+   */
+  async markIndexed(docId) {
+    try {
+      await IDB.putIndexEntries([{ term: '__doc__' + docId, postings: [{ docId, sentinel: true }] }]);
+      InvertedIndex._indexed.add(docId);
+    } catch(e) { /* niet kritiek */ }
+  },
+};
+
+/* ============================================================
    SECTION 6b: SEARCH CONTEXT MANAGER (v6)
    Beheert de actieve zoekopdracht centraal.
    ============================================================ */
@@ -3226,177 +3467,239 @@ const Search = {
   MAX_SCAN: 50,     // maximaal te scannen documenten
 
   /**
-   * Hoofd-query functie met debounce-bescherming, cache en Top-K.
+   * Hoofd-query functie — index-first met lineaire fallback.
+   * 1. Probeer inverted index (async lookup)
+   * 2. Val terug op lineaire chunk-scan als index ontbreekt
+   * 3. Cache het resultaat
    */
-  query(queryStr, filter) {
+  async queryAsync(queryStr, filter) {
     if (!queryStr || queryStr.trim().length === 0) return [];
 
-    // #9: Check cache eerst
     const cacheKey = queryStr.trim().toLowerCase() + '|' + (filter || 'alle');
     const cached = QueryCache.get(cacheKey);
-    if (cached) {
-      console.debug(`[Search] Cache hit: "${queryStr}"`);
-      return cached;
-    }
+    if (cached) { console.debug(`[Search] Cache hit: "${queryStr}"`); return cached; }
 
-    // #6: Parse query
     const pq = QueryParser.parse(queryStr);
     if (pq.tokens.length === 0) return [];
 
     let pool = filter === 'alle'
       ? State.documents
       : State.documents.filter(d => d.category === filter);
-
-    // #8: Guard
     if (!pool || pool.length === 0) return [];
 
-    const results = [];
-
+    // Zorg dat chunks beschikbaar zijn voor alle docs
     for (const doc of pool) {
-      // #8: Fail-safe rondom elke document-scoring
       try {
         if (doc.searchable && doc.content && !doc.articles) LawParser.parse(doc);
         if (doc.searchable && doc.content) ChunkEngine.build(doc);
       } catch(e) {
         console.warn('[Search] Parse guard:', doc.title, e.message);
-        continue;
       }
-
-      let score = 0;
-      let bestChunk = null;
-      let articleMatch = null;
-      let titleHit = false;
-
-      const titleLower = QueryParser.normalize(doc.title);
-      const filenameLower = QueryParser.normalize(doc.originalFileName || '');
-      const qNorm = pq.normalized;
-
-      // --- Titel scoring ---
-      if (titleLower === qNorm) { score += Search.W.TITLE_EXACT; titleHit = true; }
-      else if (titleLower.includes(qNorm)) { score += Search.W.TITLE_PHRASE; titleHit = true; }
-      for (const tok of pq.tokens) {
-        if (titleLower.includes(tok)) { score += Search.W.TITLE_TOKEN; titleHit = true; }
-      }
-      for (const tok of pq.tokens) {
-        if (filenameLower.includes(tok)) score += Search.W.FILENAME_TOKEN;
-      }
-
-      // --- Artikel-referentie ---
-      if (pq.artRef && doc.articles && doc.articles.length > 0) {
-        const matchedArt = doc.articles.find(a => {
-          const numMatch = a.num.toLowerCase() === pq.artRef.num.toLowerCase();
-          const lawMatch = !pq.artRef.law || a.law.toLowerCase().includes(pq.artRef.law);
-          return numMatch && lawMatch;
-        });
-        if (matchedArt) {
-          score += Search.W.ART_QUERY_MATCH;
-          articleMatch = matchedArt;
-        }
-      }
-
-      // --- Artikel-titel matches ---
-      if (doc.articles) {
-        for (const art of doc.articles) {
-          const artTitleNorm = QueryParser.normalize(art.title);
-          for (const tok of pq.tokens) {
-            if (artTitleNorm.includes(tok)) {
-              score += Search.W.ART_TITLE_TOKEN;
-              if (!articleMatch) articleMatch = art;
-            }
-          }
-        }
-      }
-
-      // --- Exacte frase in document ---
-      if (doc.searchable && (doc.content || '').toLowerCase().includes(qNorm)) {
-        score += Search.W.EXACT_PHRASE_DOC;
-      }
-
-      // --- Chunk-niveau scoring (Top-K aware) ---
-      if (doc._chunks && doc._chunks.length > 0) {
-        let bestChunkScore = 0;
-        let chunksScanned = 0;
-
-        for (const chunk of doc._chunks) {
-          // #3: Early exit als we al genoeg goede chunks hebben gevonden
-          // (stop als beste chunk score al erg hoog is EN we veel gescand hebben)
-          if (chunksScanned > 200 && bestChunkScore >= Search.W.CHUNK_EXACT + Search.W.CHUNK_ALL_TOKENS) break;
-          chunksScanned++;
-
-          let cs = 0;
-          const cNorm = QueryParser.normalize(chunk.text);
-
-          // Exacte frase
-          if (cNorm.includes(qNorm)) cs += Search.W.CHUNK_EXACT;
-
-          // Alle basis-tokens
-          const tokenHits = pq.tokens.filter(t => cNorm.includes(t));
-          if (tokenHits.length === pq.tokens.length && pq.tokens.length > 1) {
-            cs += Search.W.CHUNK_ALL_TOKENS;
-          }
-          for (const tok of pq.tokens) {
-            if (cNorm.includes(tok)) cs += Search.W.CHUNK_TOKEN;
-          }
-
-          // Synoniemen (lager gewicht)
-          if (pq.expandedTokens.length > pq.tokens.length) {
-            for (const tok of pq.expandedTokens) {
-              if (!pq.tokens.includes(tok) && cNorm.includes(tok)) {
-                cs += Search.W.CHUNK_TOKEN_EXPAND;
-              }
-            }
-          }
-
-          // Proximity bonus
-          if (pq.isMultiWord && tokenHits.length >= 2) {
-            const positions = tokenHits.map(t => cNorm.indexOf(t)).filter(p => p >= 0);
-            if (positions.length >= 2) {
-              const span = Math.max(...positions) - Math.min(...positions);
-              if (span < 80) cs += Search.W.PROXIMITY_BONUS;
-              else if (span < 200) cs += Math.round(Search.W.PROXIMITY_BONUS / 2);
-            }
-          }
-
-          // Early match bonus
-          if (tokenHits.length > 0) {
-            const firstPos = Math.min(...tokenHits.map(t => cNorm.indexOf(t)).filter(p => p >= 0));
-            if (firstPos < 100) cs += Search.W.EARLY_MATCH_BONUS;
-          }
-
-          // Artikel-hint bonus
-          if (chunk.artHint && pq.isJuridisch) cs += Search.W.ART_HINT_BONUS;
-          if (pq.isJuridisch && doc.category === 'wetgeving') cs += Search.W.CATEGORY_WETGEVING;
-
-          if (cs > bestChunkScore) {
-            bestChunkScore = cs;
-            bestChunk = chunk;
-          }
-        }
-
-        score += bestChunkScore;
-      }
-
-      if (titleHit && (bestChunk || (doc.content || '').length > 0)) {
-        score += Search.W.TITLE_AND_CONTENT;
-      }
-
-      if (score > 0) {
-        const snippet = Search._buildSmartSnippet(doc, bestChunk, pq.tokens, qNorm, articleMatch);
-        results.push({ doc, score, snippet, articleMatch, bestChunk });
-      }
-
-      // #3: Top-K early exit op document-niveau
-      if (results.length >= Search.MAX_SCAN) break;
     }
 
-    // Sorteer en beperk tot TOP_K
+    // Index-first: haal postings op voor alle zoektermen
+    let indexHits = null;
+    try {
+      const allTerms = [...new Set([...pq.tokens, ...pq.expandedTokens])];
+      const termPostings = await InvertedIndex.lookup(allTerms);
+
+      // Controleer of index bruikbaar is (heeft data voor minstens één term)
+      const hasIndexData = pq.tokens.some(t => (termPostings.get(t) || []).length > 0);
+
+      if (hasIndexData) {
+        indexHits = termPostings;
+      }
+    } catch(e) {
+      console.warn('[Search] Index lookup fout, val terug op lineair:', e.message);
+    }
+
+    const docScores = new Map(); // docId → { score, bestChunkIdx, articleMatch, titleHit }
+
+    if (indexHits) {
+      // === INDEX-GEBASEERDE SCORING ===
+      const docChunkScores = new Map(); // docId → Map<chunkIdx, score>
+
+      for (const tok of pq.tokens) {
+        const postings = indexHits.get(tok) || [];
+        for (const p of postings) {
+          if (!docChunkScores.has(p.docId)) docChunkScores.set(p.docId, new Map());
+          const chunkMap = docChunkScores.get(p.docId);
+          const prev = chunkMap.get(p.chunkIdx) || 0;
+          // BM25-achtige score: tf * idf-proxy
+          const idfProxy = Math.log(1 + pool.length / Math.max(1, postings.length));
+          chunkMap.set(p.chunkIdx, prev + p.tf * idfProxy * Search.W.CHUNK_TOKEN);
+        }
+      }
+
+      // Synoniemen (lager gewicht)
+      for (const tok of pq.expandedTokens) {
+        if (pq.tokens.includes(tok)) continue;
+        const postings = indexHits.get(tok) || [];
+        for (const p of postings) {
+          if (!docChunkScores.has(p.docId)) docChunkScores.set(p.docId, new Map());
+          const chunkMap = docChunkScores.get(p.docId);
+          const prev = chunkMap.get(p.chunkIdx) || 0;
+          const idfProxy = Math.log(1 + pool.length / Math.max(1, postings.length));
+          chunkMap.set(p.chunkIdx, prev + p.tf * idfProxy * Search.W.CHUNK_TOKEN_EXPAND);
+        }
+      }
+
+      // Verwerk elk doc met index-hits
+      for (const doc of pool) {
+        if (!docChunkScores.has(doc.id)) continue;
+        try {
+          const chunkMap = docChunkScores.get(doc.id);
+
+          // Vind beste chunk via index
+          let bestChunkIdx = -1;
+          let bestChunkScore = 0;
+          for (const [ci, cs] of chunkMap) {
+            if (cs > bestChunkScore) { bestChunkScore = cs; bestChunkIdx = ci; }
+          }
+
+          // Proximity bonus: meerdere tokens in zelfde chunk?
+          const tokenCoverage = pq.tokens.filter(t =>
+            (indexHits.get(t) || []).some(p => p.docId === doc.id && p.chunkIdx === bestChunkIdx)
+          ).length;
+          if (tokenCoverage >= 2) bestChunkScore += Search.W.PROXIMITY_BONUS;
+          if (tokenCoverage === pq.tokens.length && pq.tokens.length > 1) bestChunkScore += Search.W.CHUNK_ALL_TOKENS;
+
+          // Titel scoring (altijd)
+          const titleNorm = QueryParser.normalize(doc.title);
+          let score = bestChunkScore;
+          let titleHit = false;
+          if (titleNorm === pq.normalized) { score += Search.W.TITLE_EXACT; titleHit = true; }
+          else if (titleNorm.includes(pq.normalized)) { score += Search.W.TITLE_PHRASE; titleHit = true; }
+          for (const tok of pq.tokens) {
+            if (titleNorm.includes(tok)) { score += Search.W.TITLE_TOKEN; titleHit = true; }
+          }
+          if (titleHit) score += Search.W.TITLE_AND_CONTENT;
+
+          // Artikel-query match
+          let articleMatch = null;
+          if (pq.artRef && doc.articles) {
+            const ma = doc.articles.find(a => {
+              const nm = a.num.toLowerCase() === pq.artRef.num.toLowerCase();
+              const lm = !pq.artRef.law || a.law.toLowerCase().includes(pq.artRef.law);
+              return nm && lm;
+            });
+            if (ma) { score += Search.W.ART_QUERY_MATCH; articleMatch = ma; }
+          }
+
+          // Categorie bonus
+          if (pq.isJuridisch && doc.category === 'wetgeving') score += Search.W.CATEGORY_WETGEVING;
+
+          if (score > 0) {
+            docScores.set(doc.id, { score, bestChunkIdx, articleMatch, titleHit });
+          }
+        } catch(e) {
+          console.warn('[Search] Index score fout voor', doc.title, e.message);
+        }
+      }
+
+      console.debug(`[Search] Index-pad: ${docScores.size} docs gescoord`);
+
+    } else {
+      // === LINEAIRE FALLBACK (geen index beschikbaar) ===
+      console.debug('[Search] Lineaire fallback (geen index data)');
+      for (const doc of pool) {
+        try {
+          const titleNorm = QueryParser.normalize(doc.title);
+          const fileNorm = QueryParser.normalize(doc.originalFileName || '');
+          const qNorm = pq.normalized;
+          let score = 0;
+          let bestChunkIdx = -1;
+          let bestChunkScore = 0;
+          let articleMatch = null;
+          let titleHit = false;
+
+          if (titleNorm === qNorm) { score += Search.W.TITLE_EXACT; titleHit = true; }
+          else if (titleNorm.includes(qNorm)) { score += Search.W.TITLE_PHRASE; titleHit = true; }
+          for (const tok of pq.tokens) {
+            if (titleNorm.includes(tok)) { score += Search.W.TITLE_TOKEN; titleHit = true; }
+            if (fileNorm.includes(tok)) score += Search.W.FILENAME_TOKEN;
+          }
+
+          if (pq.artRef && doc.articles) {
+            const ma = doc.articles.find(a => {
+              return a.num.toLowerCase() === pq.artRef.num.toLowerCase() &&
+                (!pq.artRef.law || a.law.toLowerCase().includes(pq.artRef.law));
+            });
+            if (ma) { score += Search.W.ART_QUERY_MATCH; articleMatch = ma; }
+          }
+
+          if (doc.searchable && (doc.content||'').toLowerCase().includes(qNorm)) {
+            score += Search.W.EXACT_PHRASE_DOC;
+          }
+
+          if (doc._chunks) {
+            let scanned = 0;
+            for (const chunk of doc._chunks) {
+              if (scanned++ > 200 && bestChunkScore >= Search.W.CHUNK_EXACT) break;
+              const cNorm = QueryParser.normalize(chunk.text);
+              let cs = 0;
+              if (cNorm.includes(qNorm)) cs += Search.W.CHUNK_EXACT;
+              const hits = pq.tokens.filter(t => cNorm.includes(t));
+              if (hits.length === pq.tokens.length && pq.tokens.length > 1) cs += Search.W.CHUNK_ALL_TOKENS;
+              for (const tok of pq.tokens) { if (cNorm.includes(tok)) cs += Search.W.CHUNK_TOKEN; }
+              if (hits.length >= 2) {
+                const pos = hits.map(t => cNorm.indexOf(t));
+                const span = Math.max(...pos) - Math.min(...pos);
+                if (span < 80) cs += Search.W.PROXIMITY_BONUS;
+              }
+              if (chunk.artHint && pq.isJuridisch) cs += Search.W.ART_HINT_BONUS;
+              if (cs > bestChunkScore) { bestChunkScore = cs; bestChunkIdx = chunk.idx; }
+            }
+          }
+          score += bestChunkScore;
+          if (titleHit) score += Search.W.TITLE_AND_CONTENT;
+          if (pq.isJuridisch && doc.category === 'wetgeving') score += Search.W.CATEGORY_WETGEVING;
+          if (score > 0) docScores.set(doc.id, { score, bestChunkIdx, articleMatch, titleHit });
+        } catch(e) {
+          console.warn('[Search] Lineaire score fout:', doc.title, e.message);
+        }
+      }
+    }
+
+    // Bouw resultatenlijst
+    const results = [];
+    for (const doc of pool) {
+      const ds = docScores.get(doc.id);
+      if (!ds) continue;
+      const bestChunk = doc._chunks ? doc._chunks.find(c => c.idx === ds.bestChunkIdx) : null;
+      const snippet = Search._buildSmartSnippet(doc, bestChunk, pq.tokens, pq.normalized, ds.articleMatch);
+      results.push({ doc, score: ds.score, snippet, articleMatch: ds.articleMatch, bestChunk });
+    }
+
     results.sort((a, b) => b.score - a.score);
     const topResults = results.slice(0, Search.TOP_K);
-
-    // #9: Sla op in cache
     QueryCache.set(cacheKey, topResults);
-
     return topResults;
+  },
+
+  /**
+   * Synchrone wrapper voor backward compatibiliteit.
+   * Roept queryAsync aan en retourneert cached resultaat of lege array.
+   * De async versie vult de cache zodat volgende aanroep synchroon terugkomt.
+   */
+  query(queryStr, filter) {
+    if (!queryStr || queryStr.trim().length === 0) return [];
+    const cacheKey = queryStr.trim().toLowerCase() + '|' + (filter || 'alle');
+    const cached = QueryCache.get(cacheKey);
+    if (cached) return cached;
+
+    // Start async lookup — resultaat beschikbaar bij volgende debounce-cyclus
+    Search.queryAsync(queryStr, filter).then(results => {
+      // Trigger re-render als resultaten beschikbaar zijn
+      const q = document.getElementById('searchView')?.value?.trim();
+      const activeFilter = State.searchFilter || 'alle';
+      const activeCacheKey = (q || '').toLowerCase() + '|' + activeFilter;
+      if (activeCacheKey === cacheKey && q) {
+        Render.searchResults(results, q);
+      }
+    }).catch(e => console.warn('[Search] queryAsync fout:', e.message));
+
+    return []; // eerste aanroep: lege array (debounce zorgt voor re-trigger)
   },
 
   // #5 — Slimme snippet generator met zin-scoring
@@ -4410,6 +4713,13 @@ const Upload = {
           ChunkEngine.build(doc);
         }
 
+        // Bouw inverted index na chunking (v10)
+        if (doc.searchable && doc._chunks && doc._chunks.length > 0) {
+          InvertedIndex.buildForDoc(doc).then(() => {
+            return InvertedIndex.markIndexed(doc.id);
+          }).catch(e => console.warn('[Index] Bouw fout na upload:', e.message));
+        }
+
         clearInterval(timer);
         const el = progEl();
         if (el) el.style.width = '100%';
@@ -5128,6 +5438,30 @@ async function init() {
   // Initialiseer IndexedDB en laad data (met migratie)
   const loaded = await Storage.init();
   State.documents = loaded;
+
+  // Bouw inverted index voor bestaande documenten (v10) — op de achtergrond
+  // Zodat zoeken na eerste gebruik al via index gaat
+  setTimeout(async () => {
+    let indexed = 0;
+    for (const doc of State.documents) {
+      if (!doc.searchable || !doc.content) continue;
+      try {
+        ChunkEngine.build(doc);
+        const alreadyIndexed = await InvertedIndex.checkIndexed(doc.id);
+        if (!alreadyIndexed && doc._chunks && doc._chunks.length > 0) {
+          await InvertedIndex.buildForDoc(doc);
+          await InvertedIndex.markIndexed(doc.id);
+          indexed++;
+        }
+      } catch(e) {
+        console.warn('[Init] Index bouw fout voor', doc.title, e.message);
+      }
+    }
+    if (indexed > 0) {
+      console.info(`[Init] Inverted index gebouwd voor ${indexed} bestaande document(en)`);
+      QueryCache.invalidate(); // cache leegmaken zodat eerste search via index gaat
+    }
+  }, 500); // 500ms delay zodat UI eerst kan renderen
 
   // Load samples only if database is truly empty
   if (State.documents.length === 0) {
