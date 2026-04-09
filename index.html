@@ -816,6 +816,10 @@ button { font-family: inherit; }
 .cat-wetgeving { background: rgba(37,99,235,0.08); color: #1d4ed8; border-color: rgba(37,99,235,0.2); }
 .cat-powerpoint { background: rgba(217,119,6,0.08); color: #b45309; border-color: rgba(217,119,6,0.2); }
 .cat-overig { background: rgba(100,116,139,0.08); color: var(--gray-600); border-color: rgba(100,116,139,0.2); }
+.cat-jurisprudentie { background: var(--blue-100, #dbeafe); color: var(--blue-400, #2563eb); }
+.cat-rapport { background: #f0fdf4; color: #16a34a; }
+.cat-beleid { background: #fef9c3; color: #ca8a04; }
+
 
 /* ============================================================
    DETAIL MODAL
@@ -1590,6 +1594,47 @@ mark.highlight {
 }
 
 .parse-warn-badge { display:inline-flex; align-items:center; gap:2px; font-size:9px; font-weight:700; padding:2px 6px; border-radius:4px; background:rgba(234,88,12,0.1); color:#c2410c; border:1px solid rgba(234,88,12,0.2); cursor:help; }
+
+
+/* ====== CHATBOT STYLES ====== */
+#view-chatbot { padding: 1.5rem; }
+.chatbot-container { max-width: 800px; margin: 0 auto; display: flex; flex-direction: column; height: calc(100vh - 200px); min-height: 400px; }
+.chatbot-header { margin-bottom: 1rem; }
+.chatbot-header h2 { font-size: 1.4rem; color: var(--navy-900); margin: 0 0 0.3rem 0; }
+.chatbot-subtitle { font-size: 0.85rem; color: var(--text-muted, #666); margin: 0; }
+.chatbot-messages { flex: 1; overflow-y: auto; padding: 1rem; background: #f8f9fa; border: 1px solid #e0e4ea; border-radius: 12px; margin-bottom: 1rem; display: flex; flex-direction: column; gap: 1rem; }
+.chat-message { display: flex; gap: 0.75rem; align-items: flex-start; }
+.bot-message { flex-direction: row; }
+.user-message { flex-direction: row-reverse; }
+.chat-avatar { width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 1.1rem; flex-shrink: 0; background: var(--navy-100, #dbeafe); }
+.user-message .chat-avatar { background: var(--gold, #c9a84c); }
+.chat-bubble { max-width: 80%; padding: 0.75rem 1rem; border-radius: 12px; font-size: 0.9rem; line-height: 1.5; }
+.bot-message .chat-bubble { background: white; border: 1px solid #e0e4ea; border-radius: 4px 12px 12px 12px; }
+.user-message .chat-bubble { background: var(--navy-900, #0a1628); color: white; border-radius: 12px 4px 12px 12px; }
+.chat-bubble p { margin: 0 0 0.5rem 0; }
+.chat-bubble p:last-child { margin-bottom: 0; }
+.chat-sources { margin-top: 0.75rem; padding: 0.5rem; background: #f0f4ff; border-radius: 6px; font-size: 0.8rem; }
+.chat-sources strong { display: block; margin-bottom: 0.3rem; color: var(--navy-700, #142d58); }
+.chat-source-item { padding: 0.2rem 0; color: var(--navy-600, #1a3a70); }
+.chatbot-input-area { background: white; border: 1px solid #e0e4ea; border-radius: 12px; padding: 0.75rem; }
+.chatbot-controls { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; }
+.api-key-input { flex: 1; padding: 0.4rem 0.6rem; border: 1px solid #ccc; border-radius: 6px; font-size: 0.8rem; font-family: monospace; }
+.btn-save-key { padding: 0.4rem 0.8rem; background: var(--navy-700, #142d58); color: white; border: none; border-radius: 6px; font-size: 0.8rem; cursor: pointer; white-space: nowrap; }
+.btn-save-key:hover { background: var(--navy-800, #0f2040); }
+.chatbot-input-row { display: flex; gap: 0.5rem; align-items: flex-end; }
+.chat-textarea { flex: 1; padding: 0.5rem; border: 1px solid #e0e4ea; border-radius: 8px; font-size: 0.9rem; font-family: inherit; resize: none; outline: none; }
+.chat-textarea:focus { border-color: var(--blue-400, #2563eb); }
+.btn-send { width: 40px; height: 40px; background: var(--navy-900, #0a1628); color: white; border: none; border-radius: 8px; display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; }
+.btn-send:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-send:hover:not(:disabled) { background: var(--navy-700, #142d58); }
+.chatbot-status { font-size: 0.8rem; color: #666; margin-top: 0.3rem; min-height: 1.2em; }
+.chat-thinking { display: flex; gap: 4px; align-items: center; padding: 0.5rem; }
+.chat-thinking span { width: 8px; height: 8px; border-radius: 50%; background: #ccc; animation: chatDot 1.2s ease-in-out infinite; }
+.chat-thinking span:nth-child(2) { animation-delay: 0.2s; }
+.chat-thinking span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes chatDot { 0%, 60%, 100% { transform: translateY(0); } 30% { transform: translateY(-8px); } }
+.chat-no-info { background: #fff8e1; border: 1px solid #ffd54f; padding: 0.5rem; border-radius: 6px; font-size: 0.85rem; margin-top: 0.5rem; }
+
 </style>
 </head>
 <body>
@@ -1623,6 +1668,10 @@ mark.highlight {
       <svg class="nav-icon" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24" aria-hidden="true"><polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>
       Uploaden
     </button>
+    <button class="nav-item" id="nav-chatbot" data-view="chatbot">
+      <svg class="nav-icon" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+      Chatbot
+    </button>
 
     <div class="nav-section-label" style="margin-top:16px;">Categorieën</div>
     <button class="nav-item" id="nav-wetgeving">
@@ -1632,6 +1681,18 @@ mark.highlight {
     <button class="nav-item" id="nav-powerpoint">
       <svg class="nav-icon" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
       PowerPoints
+    </button>
+    <button class="nav-item" id="nav-jurisprudentie">
+      <svg class="nav-icon" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+      Jurisprudentie
+    </button>
+    <button class="nav-item" id="nav-rapport">
+      <svg class="nav-icon" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+      Rapporten
+    </button>
+    <button class="nav-item" id="nav-beleid">
+      <svg class="nav-icon" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+      Beleidsdocumenten
     </button>
   </div>
 
@@ -1771,11 +1832,20 @@ mark.highlight {
             <input type="radio" name="category" value="wetgeving"> Wetgeving
           </label>
           <label class="cat-option">
-            <input type="radio" name="category" value="powerpoint"> PowerPoint / Lesmateriaal
-          </label>
-          <label class="cat-option">
-            <input type="radio" name="category" value="overig" checked> Overig
-          </label>
+              <input type="radio" name="category" value="jurisprudentie"> Jurisprudentie
+            </label>
+            <label class="cat-option">
+              <input type="radio" name="category" value="rapport"> Rapport
+            </label>
+            <label class="cat-option">
+              <input type="radio" name="category" value="beleid"> Beleidsdocument
+            </label>
+            <label class="cat-option">
+              <input type="radio" name="category" value="powerpoint"> Lesmateriaal / PowerPoint
+            </label>
+            <label class="cat-option">
+              <input type="radio" name="category" value="overig" checked> Overig
+            </label>
         </div>
       </div>
 
@@ -1798,6 +1868,9 @@ mark.highlight {
         <button class="filter-chip active" data-filter="alle">Alle <span class="filter-count" id="count-alle">0</span></button>
         <button class="filter-chip" data-filter="wetgeving">⚖️ Wetgeving <span class="filter-count" id="count-wetgeving">0</span></button>
         <button class="filter-chip" data-filter="powerpoint">📊 PowerPoints <span class="filter-count" id="count-powerpoint">0</span></button>
+<button class="filter-chip" data-filter="jurisprudentie">⚖ Jurisprudentie <span class="filter-count" id="count-jurisprudentie">0</span></button>
+        <button class="filter-chip" data-filter="rapport">📋 Rapport <span class="filter-count" id="count-rapport">0</span></button>
+        <button class="filter-chip" data-filter="beleid">📄 Beleid <span class="filter-count" id="count-beleid">0</span></button>
         <button class="filter-chip" data-filter="overig">📁 Overig <span class="filter-count" id="count-overig">0</span></button>
         <select class="sort-select" id="docSort" aria-label="Sorteervolgorde">
           <option value="newest">Nieuwste eerst</option>
@@ -1851,6 +1924,10 @@ mark.highlight {
           <button class="filter-chip active" data-sfilter="alle">Alle</button>
           <button class="filter-chip" data-sfilter="wetgeving">⚖️ Wetgeving</button>
           <button class="filter-chip" data-sfilter="powerpoint">📊 PowerPoints</button>
+<button class="filter-chip" data-sfilter="jurisprudentie">⚖ Jurisprudentie</button>
+        <button class="filter-chip" data-sfilter="rapport">📋 Rapport</button>
+        <button class="filter-chip" data-sfilter="beleid">📄 Beleid</button>
+        
           <button class="filter-chip" data-sfilter="overig">📁 Overig</button>
         </div>
       </div>
@@ -1873,7 +1950,43 @@ mark.highlight {
       </div>
     </div>
 
-  </main>
+  
+  <!-- ====== CHATBOT VIEW ====== -->
+  <div id="view-chatbot" class="view" role="region" aria-label="Juridische Chatbot" style="display:none;">
+    <div class="chatbot-container">
+      <div class="chatbot-header">
+        <h2>⚖️ Juridische Chatbot</h2>
+        <p class="chatbot-subtitle">Stel een juridische vraag. De chatbot doorzoekt eerst de kennisbank en geeft een brongebonden antwoord.</p>
+      </div>
+      
+      <div class="chatbot-messages" id="chatbot-messages" role="log" aria-live="polite" aria-label="Chatgeschiedenis">
+        <div class="chat-message bot-message" id="chat-welcome">
+          <div class="chat-avatar">⚖️</div>
+          <div class="chat-bubble">
+            <p>Welkom bij de juridische chatbot van BAVPOL Bonaire.</p>
+            <p>Ik doorzoek de kennisbank en geef antwoorden gebaseerd op de beschikbare documenten. Stel uw vraag hieronder.</p>
+            <p><em>Opmerking: U dient zelf een OpenAI API-sleutel in te stellen via de instellingen.</em></p>
+          </div>
+        </div>
+      </div>
+      
+      <div class="chatbot-input-area">
+        <div class="chatbot-controls">
+          <input type="text" id="chatbot-api-key" placeholder="OpenAI API-sleutel (sk-...)" class="api-key-input" aria-label="OpenAI API-sleutel invoeren" autocomplete="off">
+          <button id="chatbot-save-key" class="btn-save-key">Opslaan</button>
+        </div>
+        <div class="chatbot-input-row">
+          <textarea id="chatbot-input" placeholder="Typ uw juridische vraag..." rows="2" aria-label="Vraag invoeren" class="chat-textarea"></textarea>
+          <button id="chatbot-send" class="btn-send" aria-label="Vraag versturen" disabled>
+            <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" width="20" height="20"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+          </button>
+        </div>
+        <div class="chatbot-status" id="chatbot-status" role="status" aria-live="polite"></div>
+      </div>
+    </div>
+  </div>
+  
+</main>
 </div>
 
 <!-- ============================================================
@@ -2420,7 +2533,7 @@ const Storage = {
       title: d.title || d.name || 'Onbekend',
       originalFileName: d.originalFileName || d.filename || '',
       type: (d.type || d.extension || '').toLowerCase(),
-      category: ['wetgeving','powerpoint','overig'].includes(d.category) ? d.category : 'overig',
+      category: ['wetgeving','jurisprudentie','rapport','beleid','powerpoint','overig'].includes(d.category) ? d.category : 'overig',
       size: d.size || 0,
       uploadedAt: d.uploadedAt || d.addedAt || Date.now(),
       parsedAt: d.parsedAt || null,
@@ -4544,6 +4657,9 @@ const Render = {
     Util.setText('count-wetgeving', docs.filter(d => d.category === 'wetgeving').length);
     Util.setText('count-powerpoint', docs.filter(d => d.category === 'powerpoint').length);
     Util.setText('count-overig', docs.filter(d => d.category === 'overig').length);
+    Util.setText('count-jurisprudentie', docs.filter(d => d.category === 'jurisprudentie').length);
+    Util.setText('count-rapport', docs.filter(d => d.category === 'rapport').length);
+    Util.setText('count-beleid', docs.filter(d => d.category === 'beleid').length);
   },
 
   dashboard() {
@@ -5369,12 +5485,12 @@ const Util = {
   },
 
   catLabel(cat) {
-    const map = { wetgeving: '⚖️ Wetgeving', powerpoint: '📊 PowerPoint', overig: '📁 Overig' };
+    const map = { wetgeving: '⚖️ Wetgeving', powerpoint: '📊 PowerPoint', overig: '📁 Overig', jurisprudentie: '⚖️ Jurisprudentie', rapport: '📋 Rapport', beleid: '📄 Beleidsdocument' };
     return map[cat] || '📁 Overig';
   },
 
   catClass(cat) {
-    const map = { wetgeving: 'cat-wetgeving', powerpoint: 'cat-powerpoint', overig: 'cat-overig' };
+    const map = { wetgeving: 'cat-wetgeving', powerpoint: 'cat-powerpoint', overig: 'cat-overig', jurisprudentie: 'cat-jurisprudentie', rapport: 'cat-rapport', beleid: 'cat-beleid' };
     return map[cat] || 'cat-overig';
   },
 
@@ -5748,6 +5864,36 @@ const Events = {
       document.querySelectorAll('.filter-chip[data-filter]').forEach(c => {
         c.classList.toggle('active', c.dataset.filter === 'powerpoint');
       });
+    // Handlers voor nieuwe categorieën
+    const navJuris = document.getElementById('nav-jurisprudentie');
+    if (navJuris) navJuris.addEventListener('click', () => {
+      UI.showView('documenten');
+      setTimeout(() => {
+        const btn = document.querySelector('[data-filter="jurisprudentie"]');
+        if (btn) btn.click();
+      }, 50);
+    });
+    const navRapport = document.getElementById('nav-rapport');
+    if (navRapport) navRapport.addEventListener('click', () => {
+      UI.showView('documenten');
+      setTimeout(() => {
+        const btn = document.querySelector('[data-filter="rapport"]');
+        if (btn) btn.click();
+      }, 50);
+    });
+    const navBeleid = document.getElementById('nav-beleid');
+    if (navBeleid) navBeleid.addEventListener('click', () => {
+      UI.showView('documenten');
+      setTimeout(() => {
+        const btn = document.querySelector('[data-filter="beleid"]');
+        if (btn) btn.click();
+      }, 50);
+    });
+    const navChatbot = document.getElementById('nav-chatbot');
+    if (navChatbot) navChatbot.addEventListener('click', () => {
+      UI.showView('chatbot');
+    });
+
       Render.documents();
     });
 
@@ -6312,6 +6458,562 @@ if (document.readyState === 'loading') {
 } else {
   init();
 }
+
+  ChatBot.init();
+
+/* =====================================================
+   CHATBOT MODULE - Juridische Chatbot voor BAVPOL
+   ===================================================== */
+
+const ChatBot = {
+  apiKey: null,
+  isProcessing: false,
+  maxContextDocs: 5,
+  maxContextChars: 8000,
+
+  init() {
+    // Load saved API key (session only - not persisted to disk)
+    this.apiKey = sessionStorage.getItem('bavpol_chat_key') || null;
+    this.bindEvents();
+    if (this.apiKey) {
+      const keyInput = document.getElementById('chatbot-api-key');
+      if (keyInput) keyInput.value = '••••••••••••••••' + this.apiKey.slice(-4);
+      document.getElementById('chatbot-send').disabled = false;
+    }
+    this.log('ChatBot initialized');
+  },
+
+  bindEvents() {
+    const sendBtn = document.getElementById('chatbot-send');
+    const input = document.getElementById('chatbot-input');
+    const saveKeyBtn = document.getElementById('chatbot-save-key');
+    const keyInput = document.getElementById('chatbot-api-key');
+
+    if (saveKeyBtn) {
+      saveKeyBtn.addEventListener('click', () => this.saveApiKey());
+    }
+    if (sendBtn) {
+      sendBtn.addEventListener('click', () => this.sendMessage());
+    }
+    if (input) {
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          if (!this.isProcessing) this.sendMessage();
+        }
+      });
+      input.addEventListener('input', () => {
+        const hasKey = !!this.apiKey;
+        const hasText = input.value.trim().length > 0;
+        if (sendBtn) sendBtn.disabled = !hasKey || !hasText || this.isProcessing;
+      });
+    }
+  },
+
+  saveApiKey() {
+    const keyInput = document.getElementById('chatbot-api-key');
+    if (!keyInput) return;
+    const val = keyInput.value.trim();
+    if (!val || val.startsWith('••')) {
+      this.setStatus('Voer een geldige API-sleutel in.', 'error');
+      return;
+    }
+    if (!val.startsWith('sk-')) {
+      this.setStatus('API-sleutel moet beginnen met sk-', 'error');
+      return;
+    }
+    this.apiKey = val;
+    sessionStorage.setItem('bavpol_chat_key', val);
+    keyInput.value = '••••••••••••••••' + val.slice(-4);
+    this.setStatus('API-sleutel opgeslagen (geldig voor deze sessie).', 'ok');
+    const input = document.getElementById('chatbot-input');
+    const sendBtn = document.getElementById('chatbot-send');
+    if (input && sendBtn) sendBtn.disabled = !(input.value.trim().length > 0);
+  },
+
+  setStatus(msg, type) {
+    const el = document.getElementById('chatbot-status');
+    if (el) {
+      el.textContent = msg;
+      el.style.color = type === 'error' ? '#e53e3e' : type === 'ok' ? '#38a169' : '#666';
+    }
+  },
+
+  async sendMessage() {
+    const input = document.getElementById('chatbot-input');
+    if (!input) return;
+    const question = input.value.trim();
+    if (!question || !this.apiKey || this.isProcessing) return;
+
+    this.isProcessing = true;
+    input.value = '';
+    const sendBtn = document.getElementById('chatbot-send');
+    if (sendBtn) sendBtn.disabled = true;
+    this.setStatus('Kennisbank doorzoeken...', '');
+
+    // Show user message
+    this.addMessage('user', question);
+    // Show thinking indicator
+    const thinkingId = this.addThinking();
+
+    try {
+      // STAP 1: Retrieval - doorzoek de kennisbank
+      const results = await this.retrieveFromKnowledgeBase(question);
+      
+      this.setStatus('Antwoord genereren...', '');
+
+      // STAP 2: Genereer antwoord op basis van bronnen
+      const answer = await this.generateAnswer(question, results);
+      
+      // Remove thinking indicator
+      this.removeThinking(thinkingId);
+      
+      // Show bot response with sources
+      this.addBotMessage(answer, results);
+      this.setStatus('', '');
+
+    } catch(err) {
+      this.removeThinking(thinkingId);
+      if (err.message && err.message.includes('401')) {
+        this.addMessage('bot', 'Fout: Ongeldige API-sleutel. Controleer uw OpenAI API-sleutel.');
+      } else if (err.message && err.message.includes('429')) {
+        this.addMessage('bot', 'Fout: Te veel verzoeken. Wacht even en probeer opnieuw.');
+      } else {
+        this.addMessage('bot', 'Er is een fout opgetreden: ' + (err.message || 'Onbekende fout'));
+      }
+      this.setStatus('', '');
+    } finally {
+      this.isProcessing = false;
+      if (sendBtn && input) sendBtn.disabled = !(input.value.trim().length > 0);
+    }
+  },
+
+  async retrieveFromKnowledgeBase(question) {
+    // Get all searchable documents from DB
+    const allDocs = await DB.getAll();
+    const searchable = allDocs.filter(d => d.searchable && d.content);
+    
+    if (searchable.length === 0) return [];
+
+    // Score each document based on keyword overlap
+    const qWords = this.tokenize(question);
+    const scored = searchable.map(doc => {
+      const content = (doc.content || '').toLowerCase();
+      const title = (doc.title || '').toLowerCase();
+      
+      let score = 0;
+      for (const word of qWords) {
+        if (word.length < 3) continue;
+        // Count occurrences in content (limited check)
+        const contentSample = content.substring(0, 20000);
+        const matches = (contentSample.match(new RegExp(word, 'gi')) || []).length;
+        score += matches * 1;
+        // Title match is weighted higher
+        if (title.includes(word)) score += 10;
+      }
+      
+      return { doc, score };
+    });
+
+    // Sort by score and take top results
+    scored.sort((a, b) => b.score - a.score);
+    const topDocs = scored.filter(s => s.score > 0).slice(0, this.maxContextDocs);
+    
+    return topDocs.map(s => ({
+      id: s.doc.id,
+      title: s.doc.title,
+      category: s.doc.category,
+      score: s.score,
+      // Extract relevant snippet from content
+      snippet: this.extractSnippet(s.doc.content, qWords),
+      fullContent: s.doc.content
+    }));
+  },
+
+  tokenize(text) {
+    return text.toLowerCase()
+      .replace(/[^a-zA-Z0-9\u00C0-\u017E\s]/g, ' ')
+      .split(/\s+/)
+      .filter(w => w.length >= 3)
+      .filter(w => !['het','de','een','van','en','in','op','te','dat','is','zijn','met','voor','aan','bij','om','als','ook','maar','door','over','uit','nog'].includes(w));
+  },
+
+  extractSnippet(content, keywords) {
+    if (!content || !keywords.length) return '';
+    const contentLower = content.toLowerCase();
+    
+    // Find best matching position
+    let bestPos = -1;
+    let bestScore = 0;
+    
+    for (const kw of keywords) {
+      const pos = contentLower.indexOf(kw);
+      if (pos >= 0) {
+        // Count keywords near this position
+        const window = contentLower.substring(Math.max(0, pos - 200), pos + 500);
+        let score = 0;
+        for (const kw2 of keywords) {
+          if (window.includes(kw2)) score++;
+        }
+        if (score > bestScore) {
+          bestScore = score;
+          bestPos = pos;
+        }
+      }
+    }
+    
+    if (bestPos < 0) return content.substring(0, 500);
+    
+    const start = Math.max(0, bestPos - 200);
+    const end = Math.min(content.length, bestPos + 600);
+    return (start > 0 ? '...' : '') + content.substring(start, end) + (end < content.length ? '...' : '');
+  },
+
+  buildContext(results) {
+    let context = '';
+    let totalChars = 0;
+    
+    for (const r of results) {
+      const docHeader = '=== BRON: ' + r.title + ' (categorie: ' + r.category + ') ===\n';
+      const snippet = r.snippet || '';
+      const entry = docHeader + snippet + '\n\n';
+      
+      if (totalChars + entry.length > this.maxContextChars) {
+        // Add truncated version
+        const remaining = this.maxContextChars - totalChars - docHeader.length - 10;
+        if (remaining > 100) {
+          context += docHeader + snippet.substring(0, remaining) + '...\n\n';
+        }
+        break;
+      }
+      context += entry;
+      totalChars += entry.length;
+    }
+    
+    return context;
+  },
+
+  async generateAnswer(question, results) {
+    if (!this.apiKey) throw new Error('Geen API-sleutel ingesteld');
+
+    const context = this.buildContext(results);
+    
+    let systemPrompt;
+    if (results.length === 0) {
+      systemPrompt = `U bent een juridische assistent voor BAVPOL Bonaire (Handhaving & Politie).
+Er zijn GEEN relevante documenten gevonden in de kennisbank voor deze vraag.
+Zeg duidelijk dat er onvoldoende informatie beschikbaar is in de kennisbank.
+Verzin GEEN informatie. Noem GEEN artikelen of wetsartikelen die u niet heeft gezien.
+Antwoord kort en zakelijk in het Nederlands.`;
+    } else {
+      systemPrompt = `U bent een juridische assistent voor BAVPOL Bonaire (Handhaving & Politie).
+U heeft toegang tot de volgende documenten uit de kennisbank:
+
+${context}
+
+REGELS:
+- Geef ALLEEN antwoorden op basis van de bovenstaande documenten.
+- Verzin GEEN feiten, artikelen of wetsverwijzingen die niet in de context staan.
+- Als de vraag niet volledig beantwoord kan worden, zeg dat dan eerlijk.
+- Antwoord eerst kort en direct, daarna de juridische onderbouwing.
+- Sluit af met de bronvermelding (welke documenten u heeft gebruikt).
+- Antwoord in het Nederlands.
+- Wees juridisch precies maar begrijpelijk.`;
+    }
+
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + this.apiKey
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: question }
+        ],
+        temperature: 0.2,
+        max_tokens: 1000
+      })
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(response.status + ': ' + (error.error?.message || response.statusText));
+    }
+
+    const data = await response.json();
+    return data.choices?.[0]?.message?.content || 'Geen antwoord ontvangen.';
+  },
+
+  addMessage(role, text) {
+    const container = document.getElementById('chatbot-messages');
+    if (!container) return;
+    
+    const msgEl = document.createElement('div');
+    msgEl.className = 'chat-message ' + (role === 'user' ? 'user-message' : 'bot-message');
+    
+    const avatar = document.createElement('div');
+    avatar.className = 'chat-avatar';
+    avatar.textContent = role === 'user' ? '👤' : '⚖️';
+    
+    const bubble = document.createElement('div');
+    bubble.className = 'chat-bubble';
+    
+    // Convert newlines to paragraphs
+    const paragraphs = text.split('\n\n').filter(p => p.trim());
+    if (paragraphs.length > 0) {
+      paragraphs.forEach(p => {
+        const pEl = document.createElement('p');
+        pEl.textContent = p.trim();
+        bubble.appendChild(pEl);
+      });
+    } else {
+      bubble.textContent = text;
+    }
+    
+    msgEl.appendChild(avatar);
+    msgEl.appendChild(bubble);
+    container.appendChild(msgEl);
+    container.scrollTop = container.scrollHeight;
+    return msgEl;
+  },
+
+  addBotMessage(text, sources) {
+    const container = document.getElementById('chatbot-messages');
+    if (!container) return;
+    
+    const msgEl = document.createElement('div');
+    msgEl.className = 'chat-message bot-message';
+    
+    const avatar = document.createElement('div');
+    avatar.className = 'chat-avatar';
+    avatar.textContent = '⚖️';
+    
+    const bubble = document.createElement('div');
+    bubble.className = 'chat-bubble';
+    
+    // Parse text to paragraphs
+    const paragraphs = text.split('\n\n').filter(p => p.trim());
+    paragraphs.forEach(p => {
+      const pEl = document.createElement('p');
+      pEl.textContent = p.trim();
+      bubble.appendChild(pEl);
+    });
+    
+    // Add sources block if available
+    if (sources && sources.length > 0) {
+      const sourcesEl = document.createElement('div');
+      sourcesEl.className = 'chat-sources';
+      const sourcesTitle = document.createElement('strong');
+      sourcesTitle.textContent = '📚 Geraadpleegde bronnen:';
+      sourcesEl.appendChild(sourcesTitle);
+      
+      sources.forEach((s, i) => {
+        const sEl = document.createElement('div');
+        sEl.className = 'chat-source-item';
+        sEl.textContent = (i + 1) + '. ' + s.title + (s.category ? ' [' + s.category + ']' : '');
+        sourcesEl.appendChild(sEl);
+      });
+      
+      bubble.appendChild(sourcesEl);
+    } else {
+      const noInfo = document.createElement('div');
+      noInfo.className = 'chat-no-info';
+      noInfo.textContent = 'ℹ️ Geen relevante documenten gevonden in de kennisbank voor deze vraag.';
+      bubble.appendChild(noInfo);
+    }
+    
+    msgEl.appendChild(avatar);
+    msgEl.appendChild(bubble);
+    container.appendChild(msgEl);
+    container.scrollTop = container.scrollHeight;
+  },
+
+  addThinking() {
+    const container = document.getElementById('chatbot-messages');
+    if (!container) return null;
+    
+    const id = 'thinking-' + Date.now();
+    const msgEl = document.createElement('div');
+    msgEl.className = 'chat-message bot-message';
+    msgEl.id = id;
+    
+    const avatar = document.createElement('div');
+    avatar.className = 'chat-avatar';
+    avatar.textContent = '⚖️';
+    
+    const bubble = document.createElement('div');
+    bubble.className = 'chat-bubble';
+    bubble.innerHTML = '<div class="chat-thinking"><span></span><span></span><span></span></div>';
+    
+    msgEl.appendChild(avatar);
+    msgEl.appendChild(bubble);
+    container.appendChild(msgEl);
+    container.scrollTop = container.scrollHeight;
+    return id;
+  },
+
+  removeThinking(id) {
+    if (id) {
+      const el = document.getElementById(id);
+      if (el) el.remove();
+    }
+  },
+
+  log(msg) {
+    // Silent in production
+  }
+};
+
+/* =====================================================
+   PARSER UITBREIDING - Documenttype-bewuste verwerking
+   ===================================================== */
+
+const DocParser = {
+  // Parse document based on its category/type
+  parseByType(content, category, filename) {
+    if (!content) return { sections: [], summary: '', articleCount: 0 };
+    
+    switch(category) {
+      case 'wetgeving':
+        return this.parseWetgeving(content);
+      case 'jurisprudentie':
+        return this.parseJurisprudentie(content);
+      case 'rapport':
+        return this.parseRapport(content);
+      case 'beleid':
+        return this.parseBeleid(content);
+      case 'powerpoint':
+        return this.parseLesmateriaal(content, filename);
+      default:
+        return this.parseOverig(content);
+    }
+  },
+
+  parseWetgeving(content) {
+    // Artikel-based parsing (bestaande logica behouden)
+    const articlePattern = /Artikel\s+\d+[a-z]?/gi;
+    const matches = content.match(articlePattern) || [];
+    return {
+      sections: matches.slice(0, 10).map(m => ({ title: m, type: 'artikel' })),
+      summary: content.substring(0, 500),
+      articleCount: matches.length,
+      type: 'wetgeving'
+    };
+  },
+
+  parseJurisprudentie(content) {
+    // Uitspraak-based parsing - inhoud + overwegingen
+    const sections = [];
+    
+    // Zoek naar standaard uitspraak-structuren
+    const patterns = [
+      /ECLI:[^\s]+/i,  // ECLI nummer
+      /Overwegingen?/i,
+      /Beoordeling/i,
+      /Beslissing/i,
+      /Uitspraak/i
+    ];
+    
+    patterns.forEach(p => {
+      const match = content.match(p);
+      if (match) {
+        sections.push({ title: match[0], type: 'overweging' });
+      }
+    });
+    
+    return {
+      sections,
+      summary: content.substring(0, 800),
+      articleCount: 0,
+      type: 'jurisprudentie'
+    };
+  },
+
+  parseRapport(content) {
+    // Rapport: volledige tekst, paragrafen/kopjes
+    const sections = [];
+    const lines = content.split('\n');
+    
+    lines.forEach(line => {
+      const trimmed = line.trim();
+      // Detecteer kopjes (korte, niet-punt-eindigende regels in hoofdletters of met nummering)
+      if (trimmed.length > 0 && trimmed.length < 100) {
+        if (/^[0-9]+\./.test(trimmed) || /^[A-Z\u00C0-\u017E]{3,}/.test(trimmed)) {
+          sections.push({ title: trimmed.substring(0, 80), type: 'paragraaf' });
+        }
+      }
+    });
+    
+    return {
+      sections: sections.slice(0, 15),
+      summary: content.substring(0, 600),
+      articleCount: 0,
+      type: 'rapport'
+    };
+  },
+
+  parseBeleid(content) {
+    // Beleidsdocument: paragrafen en kopjes
+    const sections = [];
+    const lines = content.split('\n');
+    
+    lines.forEach(line => {
+      const trimmed = line.trim();
+      if (trimmed.length > 5 && trimmed.length < 120) {
+        if (/^(§|Artikel|Paragraaf|Hoofdstuk|Afdeling|§)/.test(trimmed) ||
+            /^[0-9]+\.([0-9]+\.)?\s+[A-Z]/.test(trimmed)) {
+          sections.push({ title: trimmed.substring(0, 100), type: 'paragraaf' });
+        }
+      }
+    });
+    
+    return {
+      sections: sections.slice(0, 15),
+      summary: content.substring(0, 600),
+      articleCount: 0,
+      type: 'beleid'
+    };
+  },
+
+  parseLesmateriaal(content, filename) {
+    // Lesmateriaal/PowerPoint - slides als inhoudelijk bruikbaar materiaal
+    const sections = [];
+    const lines = content.split('\n');
+    let slideCount = 0;
+    
+    lines.forEach(line => {
+      const trimmed = line.trim();
+      // Detecteer slide-titels of hoofdpunten
+      if (trimmed.length > 3 && trimmed.length < 150) {
+        if (trimmed.match(/^(Slide|Dia|Onderwerp|Thema|Hoofdstuk|Module)/i) ||
+            (trimmed === trimmed.toUpperCase() && trimmed.length > 5 && trimmed.length < 80)) {
+          slideCount++;
+          sections.push({ title: trimmed.substring(0, 80), type: 'slide' });
+        }
+      }
+    });
+    
+    return {
+      sections: sections.slice(0, 20),
+      summary: content.substring(0, 600),
+      articleCount: slideCount,
+      type: 'lesmateriaal'
+    };
+  },
+
+  parseOverig(content) {
+    return {
+      sections: [],
+      summary: content.substring(0, 500),
+      articleCount: 0,
+      type: 'overig'
+    };
+  }
+};
+
 </script>
 
 <!--
