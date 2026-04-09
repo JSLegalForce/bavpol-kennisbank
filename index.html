@@ -5597,6 +5597,20 @@ const ValidationRunner = {
     // P5: fouillering niet afgekapt
     ValidationRunner._assert(QueryParser.normalizeToken('fouillering') === 'fouillering', 'P5: fouillering intact');
     ValidationRunner._assert(QueryParser.normalizeToken('hulpofficier') === 'hulpofficier', 'P5: hulpofficier intact');
+
+    // ART313: gerichte regressietest voor artikel 313 boundary-bug
+    // Bug was MAX_ITER=500 — art.313 was de 500e regex-match en viel buiten de limiet.
+    const _art313Content = Array.from({ length: 520 }, (_, i) =>
+      `Artikel ${i + 1}\n\nInhoud ${i + 1}.\n`
+    ).join('\n');
+    const _art313Arts = LawParser.extractArticles(_art313Content);
+    const _art313 = _art313Arts.find(a => a.num === '313');
+    ValidationRunner._assert(!!_art313, 'ART313: artikel 313 aanwezig bij 520-artikel document',
+      'totaal: ' + _art313Arts.length);
+    ValidationRunner._assert(!(_art313 && _art313.content.length > 15000),
+      'ART313: artikel 313 niet onredelijk groot', 'len: ' + (_art313?.content?.length || 0));
+    ValidationRunner._assert(!(_art313 && _art313.parseWarning),
+      'ART313: artikel 313 geen parseWarning bij juiste MAX_ITER');
   },
 
   async runAll(opts = {}) {
