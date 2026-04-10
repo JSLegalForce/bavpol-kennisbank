@@ -6587,33 +6587,62 @@ const ChatBot = {
   },
 
   async retrieveFromKnowledgeBase(question) {
-    // Get all searchable documents from DB
     const allDocs = State.documents;
     const searchable = allDocs.filter(d => d.searchable && d.content);
     
     if (searchable.length === 0) return [];
 
-    // Score each document based on keyword overlap
     const qWords = this.tokenize(question);
+
+    // Detect if question is juridical/legal (wetgeving-focused)
+    const juridicalSignals = ['artikel', 'art.', 'mag', 'bevoegd', 'grondslag', 'wet', 'wvs', 'wvsv', 'wetboek',
+      'strafvorder', 'strafrecht', 'politie', 'opsporings', 'fouillering', 'staande', 'identiteit', 'vordering',
+      'bevel', 'wederspannig', 'aanhouding', 'vrijheidsbeneming', 'inbeslagneming', 'doorzoeking'];
+    const qLower = question.toLowerCase();
+    const isJuridical = juridicalSignals.some(s => qLower.includes(s)) || qWords.some(w => juridicalSignals.includes(w));
+
+    // Article pattern regex - matches "artikel 27", "art. 3", "art 156" etc.
+    const artPattern = /art(?:ikel)?[.s]+(d+)/gi;
+
+    // Extract article numbers mentioned in the question
+    const qArticleNums = [];
+    let m;
+    while ((m = artPattern.exec(qLower)) !== null) qArticleNums.push(m[1]);
+    artPattern.lastIndex = 0;
+
     const scored = searchable.map(doc => {
       const content = (doc.content || '').toLowerCase();
       const title = (doc.title || '').toLowerCase();
-      
       let score = 0;
+
       for (const word of qWords) {
         if (word.length < 3) continue;
-        // Count occurrences in content (limited check)
         const contentSample = content.substring(0, 20000);
         const matches = (contentSample.match(new RegExp(word, 'gi')) || []).length;
         score += matches * 1;
-        // Title match is weighted higher
+        // Title match weighted higher
         if (title.includes(word)) score += 10;
       }
-      
+
+      // BOOST: wetgeving/jurisprudentie gets priority for juridical questions
+      if (isJuridical && (doc.category === 'wetgeving' || doc.category === 'jurisprudentie')) {
+        score += 30;
+      }
+
+      // BOOST: article number match in content
+      for (const artNum of qArticleNums) {
+        const artRegex = new RegExp('art(?:ikel)?[.\s]+' + artNum + '[^0-9]', 'i');
+        if (artRegex.test(content)) score += 50;
+      }
+
+      // BOOST: article-related keywords in content near question keywords
+      const hasArtMention = artPattern.test(content);
+      artPattern.lastIndex = 0;
+      if (isJuridical && hasArtMention) score += 15;
+
       return { doc, score };
     });
 
-    // Sort by score and take top results
     scored.sort((a, b) => b.score - a.score);
     const topDocs = scored.filter(s => s.score > 0).slice(0, this.maxContextDocs);
     
@@ -6622,8 +6651,7 @@ const ChatBot = {
       title: s.doc.title,
       category: s.doc.category,
       score: s.score,
-      // Extract relevant snippet from content
-      snippet: this.extractSnippet(s.doc.content, qWords),
+      snippet: this.extractSnippet(s.doc.content, qWords, qArticleNums),
       fullContent: s.doc.content
     }));
   },
@@ -6636,34 +6664,72 @@ const ChatBot = {
       .filter(w => !['het','de','een','van','en','in','op','te','dat','is','zijn','met','voor','aan','bij','om','als','ook','maar','door','over','uit','nog'].includes(w));
   },
 
-  extractSnippet(content, keywords) {
-    if (!content || !keywords.length) return '';
+  extractSnippet(content, keywords, articleNums) {
+    if (!content) return '';
+    articleNums = articleNums || [];
     const contentLower = content.toLowerCase();
-    
-    // Find best matching position
     let bestPos = -1;
     let bestScore = 0;
-    
-    for (const kw of keywords) {
-      const pos = contentLower.indexOf(kw);
-      if (pos >= 0) {
-        // Count keywords near this position
-        const window = contentLower.substring(Math.max(0, pos - 200), pos + 500);
-        let score = 0;
-        for (const kw2 of keywords) {
-          if (window.includes(kw2)) score++;
-        }
-        if (score > bestScore) {
-          bestScore = score;
-          bestPos = pos;
+
+    // PRIORITY 1: Find article mentions matching query article numbers
+    if (articleNums.length > 0) {
+      for (const artNum of articleNums) {
+        const artRegex = new RegExp('art(?:ikel)?[.\s]+' + artNum + '[^0-9]', 'i');
+        const m = artRegex.exec(contentLower);
+        if (m && m.index >= 0) {
+          bestPos = m.index;
+          bestScore = 999;
+          break;
         }
       }
     }
-    
-    if (bestPos < 0) return content.substring(0, 500);
-    
-    const start = Math.max(0, bestPos - 200);
-    const end = Math.min(content.length, bestPos + 600);
+
+    // PRIORITY 2: Find "artikel X" or "art. X" near keywords
+    if (bestPos < 0 && keywords.length > 0) {
+      const artAnyRegex = /art(?:ikel)?[.s]+d+/gi;
+      let artMatch;
+      while ((artMatch = artAnyRegex.exec(contentLower)) !== null) {
+        const window500 = contentLower.substring(Math.max(0, artMatch.index - 200), artMatch.index + 400);
+        let kwScore = 0;
+        for (const kw of keywords) {
+          if (window500.includes(kw)) kwScore += 2;
+        }
+        if (kwScore > bestScore) {
+          bestScore = kwScore;
+          bestPos = artMatch.index;
+        }
+      }
+    }
+
+    // PRIORITY 3: Standard keyword-based position
+    if (bestPos < 0 || bestScore < 2) {
+      let kwBestPos = -1;
+      let kwBestScore = 0;
+      for (const kw of keywords) {
+        if (!kw || kw.length < 3) continue;
+        const pos = contentLower.indexOf(kw);
+        if (pos >= 0) {
+          const window700 = contentLower.substring(Math.max(0, pos - 200), pos + 500);
+          let score = 0;
+          for (const kw2 of keywords) {
+            if (window700.includes(kw2)) score++;
+          }
+          if (score > kwBestScore) {
+            kwBestScore = score;
+            kwBestPos = pos;
+          }
+        }
+      }
+      if (kwBestPos >= 0 && (bestPos < 0 || kwBestScore > bestScore)) {
+        bestPos = kwBestPos;
+      }
+    }
+
+    if (bestPos < 0) return content.substring(0, 800);
+
+    // Larger window for legal context: 300 chars before, 900 after
+    const start = Math.max(0, bestPos - 300);
+    const end = Math.min(content.length, bestPos + 900);
     return (start > 0 ? '...' : '') + content.substring(start, end) + (end < content.length ? '...' : '');
   },
 
@@ -6672,12 +6738,16 @@ const ChatBot = {
     let totalChars = 0;
     
     for (const r of results) {
-      const docHeader = '=== BRON: ' + r.title + ' (categorie: ' + r.category + ') ===\n';
+      const catLabel = r.category === 'wetgeving' ? 'WETGEVING' :
+                       r.category === 'jurisprudentie' ? 'JURISPRUDENTIE' :
+                       r.category === 'rapport' ? 'RAPPORT' :
+                       r.category === 'beleidsdocument' ? 'BELEIDSDOCUMENT' :
+                       r.category === 'lesmateriaal' ? 'LESMATERIAAL' : 'DOCUMENT';
+      const docHeader = '=== BRON [' + catLabel + ']: ' + r.title + ' ===\n';
       const snippet = r.snippet || '';
       const entry = docHeader + snippet + '\n\n';
       
       if (totalChars + entry.length > this.maxContextChars) {
-        // Add truncated version
         const remaining = this.maxContextChars - totalChars - docHeader.length - 10;
         if (remaining > 100) {
           context += docHeader + snippet.substring(0, remaining) + '...\n\n';
@@ -6705,18 +6775,30 @@ Verzin GEEN informatie. Noem GEEN artikelen of wetsartikelen die u niet heeft ge
 Antwoord kort en zakelijk in het Nederlands.`;
     } else {
       systemPrompt = `U bent een juridische assistent voor BAVPOL Bonaire (Handhaving & Politie).
+
 U heeft toegang tot de volgende documenten uit de kennisbank:
 
 ${context}
 
-REGELS:
-- Geef ALLEEN antwoorden op basis van de bovenstaande documenten.
-- Verzin GEEN feiten, artikelen of wetsverwijzingen die niet in de context staan.
-- Als de vraag niet volledig beantwoord kan worden, zeg dat dan eerlijk.
-- Antwoord eerst kort en direct, daarna de juridische onderbouwing.
-- Sluit af met de bronvermelding (welke documenten u heeft gebruikt).
-- Antwoord in het Nederlands.
-- Wees juridisch precies maar begrijpelijk.`;
+STRIKTE ANTWOORDREGELS:
+1. Geef ALLEEN antwoorden op basis van de bovenstaande documenten.
+2. Verzin NOOIT feiten, artikelen of wetsverwijzingen die niet letterlijk in de context staan.
+3. Als een concreet artikel in de context staat, MOET u dat artikel noemen met het exacte artikelnummer.
+4. Als de vraag juridisch van aard is (bevoegdheid, grondslag, procedure), gebruik dan ALTIJD deze structuur:
+
+**Kort antwoord:** [max 2 zinnen, direct antwoord]
+
+**Wettelijke grondslag:** [artikel X van [wet], of "niet gevonden in de kennisbank"]
+
+**Toelichting:** [juridisch correcte uitleg op basis van de context, max 4 zinnen]
+
+**Bron:** [titel van het document + artikel indien beschikbaar]
+
+5. Als er GEEN concreet artikel beschikbaar is: zeg dat eerlijk ("Het exacte artikel is niet aangetroffen in de kennisbank").
+6. Geef GEEN vage samenvattingen als een concreet artikel beschikbaar is.
+7. Onderscheid documenttypen: wetgeving > jurisprudentie > beleidsdocument > rapport > overig.
+8. Bij wetgevingsvragen: geef altijd eerst de wettelijke grondslag, dan pas toelichting.
+9. Antwoord in het Nederlands. Wees juridisch precies.`;
     }
 
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -6731,8 +6813,8 @@ REGELS:
           { role: 'system', content: systemPrompt },
           { role: 'user', content: question }
         ],
-        temperature: 0.2,
-        max_tokens: 1000
+        temperature: 0.1,
+        max_tokens: 1200
       })
     });
 
