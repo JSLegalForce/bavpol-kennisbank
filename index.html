@@ -6588,7 +6588,7 @@ const ChatBot = {
 
   async retrieveFromKnowledgeBase(question) {
     // Get all searchable documents from DB
-    const allDocs = await DB.getAll();
+    const allDocs = State.documents;
     const searchable = allDocs.filter(d => d.searchable && d.content);
     
     if (searchable.length === 0) return [];
