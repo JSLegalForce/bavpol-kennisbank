@@ -6669,13 +6669,13 @@ const ChatBot = {
 
     // PRIORITY 0: Direct search for specific long keywords (>=8 chars)
     // These are domain-specific terms that appear rarely and directly identify the article
-    const longKeywords = keywords.filter(w => w.length >= 8);
+    const longKeywords = [...keywords.filter(w => w.length >= 8)].sort((a,b) => b.length - a.length);
     if (longKeywords.length > 0) {
       for (const lkw of longKeywords) {
         const lkwPos = contentLower.indexOf(lkw);
         if (lkwPos >= 0) {
           const window800 = contentLower.substring(Math.max(0, lkwPos - 300), lkwPos + 600);
-          let lkwScore = 20; // base score for exact long keyword match
+          let lkwScore = 15 + lkw.length; // longer keywords = more specific, higher base score
           for (const kw of keywords) {
             if (window800.includes(kw)) lkwScore += 3;
           }
