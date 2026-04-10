@@ -6664,6 +6664,33 @@ const ChatBot = {
     let bestPos = -1;
     let bestScore = 0;
 
+    // Legal context indicators that boost relevance
+    const legalIndicators = ['bevoegd', 'opsporingsambtenaar', 'verboden', 'verplicht', 'strafbaar', 'schuldig', 'misdrijf', 'overtreding'];
+
+    // PRIORITY 0: Direct search for specific long keywords (>=8 chars)
+    // These are domain-specific terms that appear rarely and directly identify the article
+    const longKeywords = keywords.filter(w => w.length >= 8);
+    if (longKeywords.length > 0) {
+      for (const lkw of longKeywords) {
+        const lkwPos = contentLower.indexOf(lkw);
+        if (lkwPos >= 0) {
+          const window800 = contentLower.substring(Math.max(0, lkwPos - 300), lkwPos + 600);
+          let lkwScore = 20; // base score for exact long keyword match
+          for (const kw of keywords) {
+            if (window800.includes(kw)) lkwScore += 3;
+          }
+          // Legal context bonus
+          for (const li of legalIndicators) {
+            if (window800.includes(li)) lkwScore += 2;
+          }
+          if (lkwScore > bestScore) {
+            bestScore = lkwScore;
+            bestPos = lkwPos;
+          }
+        }
+      }
+    }
+
     // PRIORITY 1: Exact article number from question
     if (articleNums.length > 0) {
       for (const artNum of articleNums) {
@@ -6678,23 +6705,34 @@ const ChatBot = {
     }
 
     // PRIORITY 1.5: Phrase/bigram search from raw question
-    if (bestPos < 0 && rawQuestion) {
+    if (bestScore < 25 && rawQuestion) {
       const qTokens = rawQuestion.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length >= 2);
       const phrases = [];
+      // Trigrams
       for (let i = 0; i < qTokens.length - 2; i++) {
         phrases.push(qTokens[i] + ' ' + qTokens[i+1] + ' ' + qTokens[i+2]);
       }
+      // Bigrams
       for (let i = 0; i < qTokens.length - 1; i++) {
         phrases.push(qTokens[i] + ' ' + qTokens[i+1]);
       }
+      // Bigrams with "te" inserted (e.g. "staande te houden")
+      for (let i = 0; i < qTokens.length - 1; i++) {
+        phrases.push(qTokens[i] + ' te ' + qTokens[i+1]);
+      }
+      
       for (const phrase of phrases) {
         if (phrase.length < 6) continue;
         const phraseIdx = contentLower.indexOf(phrase);
         if (phraseIdx >= 0) {
-          const window600 = contentLower.substring(Math.max(0, phraseIdx - 150), phraseIdx + 450);
-          let phraseScore = 10;
+          const window700 = contentLower.substring(Math.max(0, phraseIdx - 200), phraseIdx + 500);
+          let phraseScore = 12;
           for (const kw of keywords) {
-            if (window600.includes(kw)) phraseScore += 2;
+            if (window700.includes(kw)) phraseScore += 2;
+          }
+          // Legal context bonus
+          for (const li of legalIndicators) {
+            if (window700.includes(li)) phraseScore += 3;
           }
           if (phraseScore > bestScore) {
             bestScore = phraseScore;
@@ -6704,8 +6742,8 @@ const ChatBot = {
       }
     }
 
-    // PRIORITY 2: Find "artikel X" near keywords
-    if (bestPos < 0 && keywords.length > 0) {
+    // PRIORITY 2: Find "artikel X" near keywords (only if no good match yet)
+    if (bestScore < 15 && keywords.length > 0) {
       const artAnyRegex = /art(?:ikel)?[.\s]+\d+/gi;
       let artMatch;
       while ((artMatch = artAnyRegex.exec(contentLower)) !== null) {
@@ -6721,27 +6759,31 @@ const ChatBot = {
       }
     }
 
-    // PRIORITY 3: Standard keyword search
-    if (bestPos < 0) {
+    // PRIORITY 3: Standard keyword search (runs when no good match found)
+    if (bestScore < 5) {
       for (const kw of keywords) {
         if (!kw || kw.length < 3) continue;
-        const pos = contentLower.indexOf(kw);
-        if (pos >= 0) {
-          const window700 = contentLower.substring(Math.max(0, pos - 200), pos + 500);
+        let kwIdx = 0;
+        while ((kwIdx = contentLower.indexOf(kw, kwIdx)) >= 0) {
+          const window700 = contentLower.substring(Math.max(0, kwIdx - 200), kwIdx + 500);
           let score = 0;
           for (const kw2 of keywords) {
             if (window700.includes(kw2)) score++;
           }
+          // Weight by keyword length (longer = more specific)
+          score += kw.length / 5;
           if (score > bestScore) {
             bestScore = score;
-            bestPos = pos;
+            bestPos = kwIdx;
           }
+          kwIdx++;
         }
       }
     }
 
     if (bestPos < 0) return content.substring(0, 800);
 
+    // Larger window: 300 chars before, 900 after
     const start = Math.max(0, bestPos - 300);
     const end = Math.min(content.length, bestPos + 900);
     return (start > 0 ? '...' : '') + content.substring(start, end) + (end < content.length ? '...' : '');
