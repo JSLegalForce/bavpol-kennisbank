@@ -6594,17 +6594,13 @@ const ChatBot = {
 
     const qWords = this.tokenize(question);
 
-    // Detect if question is juridical/legal (wetgeving-focused)
     const juridicalSignals = ['artikel', 'art.', 'mag', 'bevoegd', 'grondslag', 'wet', 'wvs', 'wvsv', 'wetboek',
       'strafvorder', 'strafrecht', 'politie', 'opsporings', 'fouillering', 'staande', 'identiteit', 'vordering',
       'bevel', 'wederspannig', 'aanhouding', 'vrijheidsbeneming', 'inbeslagneming', 'doorzoeking'];
     const qLower = question.toLowerCase();
     const isJuridical = juridicalSignals.some(s => qLower.includes(s)) || qWords.some(w => juridicalSignals.includes(w));
 
-    // Article pattern regex - matches "artikel 27", "art. 3", "art 156" etc.
-    const artPattern = /art(?:ikel)?[.s]+(d+)/gi;
-
-    // Extract article numbers mentioned in the question
+    const artPattern = /art(?:ikel)?[.\s]+(d+)/gi;
     const qArticleNums = [];
     let m;
     while ((m = artPattern.exec(qLower)) !== null) qArticleNums.push(m[1]);
@@ -6620,22 +6616,18 @@ const ChatBot = {
         const contentSample = content.substring(0, 20000);
         const matches = (contentSample.match(new RegExp(word, 'gi')) || []).length;
         score += matches * 1;
-        // Title match weighted higher
         if (title.includes(word)) score += 10;
       }
 
-      // BOOST: wetgeving/jurisprudentie gets priority for juridical questions
       if (isJuridical && (doc.category === 'wetgeving' || doc.category === 'jurisprudentie')) {
         score += 30;
       }
 
-      // BOOST: article number match in content
       for (const artNum of qArticleNums) {
-        const artRegex = new RegExp('art(?:ikel)?[.\s]+' + artNum + '[^0-9]', 'i');
+        const artRegex = new RegExp('art(?:ikel)?[.\\s]+' + artNum + '[^0-9]', 'i');
         if (artRegex.test(content)) score += 50;
       }
 
-      // BOOST: article-related keywords in content near question keywords
       const hasArtMention = artPattern.test(content);
       artPattern.lastIndex = 0;
       if (isJuridical && hasArtMention) score += 15;
@@ -6651,7 +6643,7 @@ const ChatBot = {
       title: s.doc.title,
       category: s.doc.category,
       score: s.score,
-      snippet: this.extractSnippet(s.doc.content, qWords, qArticleNums),
+      snippet: this.extractSnippet(s.doc.content, qWords, qArticleNums, question),
       fullContent: s.doc.content
     }));
   },
@@ -6664,35 +6656,63 @@ const ChatBot = {
       .filter(w => !['het','de','een','van','en','in','op','te','dat','is','zijn','met','voor','aan','bij','om','als','ook','maar','door','over','uit','nog'].includes(w));
   },
 
-  extractSnippet(content, keywords, articleNums) {
+  extractSnippet(content, keywords, articleNums, rawQuestion) {
     if (!content) return '';
     articleNums = articleNums || [];
+    rawQuestion = rawQuestion || '';
     const contentLower = content.toLowerCase();
     let bestPos = -1;
     let bestScore = 0;
 
-    // PRIORITY 1: Find article mentions matching query article numbers
+    // PRIORITY 1: Exact article number from question
     if (articleNums.length > 0) {
       for (const artNum of articleNums) {
-        const artRegex = new RegExp('art(?:ikel)?[.\s]+' + artNum + '[^0-9]', 'i');
-        const m = artRegex.exec(contentLower);
-        if (m && m.index >= 0) {
-          bestPos = m.index;
+        const artRegex = new RegExp('art(?:ikel)?[.\\s]+' + artNum + '[^0-9]', 'i');
+        const artM = artRegex.exec(contentLower);
+        if (artM && artM.index >= 0) {
+          bestPos = artM.index;
           bestScore = 999;
           break;
         }
       }
     }
 
-    // PRIORITY 2: Find "artikel X" or "art. X" near keywords
+    // PRIORITY 1.5: Phrase/bigram search from raw question
+    if (bestPos < 0 && rawQuestion) {
+      const qTokens = rawQuestion.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length >= 2);
+      const phrases = [];
+      for (let i = 0; i < qTokens.length - 2; i++) {
+        phrases.push(qTokens[i] + ' ' + qTokens[i+1] + ' ' + qTokens[i+2]);
+      }
+      for (let i = 0; i < qTokens.length - 1; i++) {
+        phrases.push(qTokens[i] + ' ' + qTokens[i+1]);
+      }
+      for (const phrase of phrases) {
+        if (phrase.length < 6) continue;
+        const phraseIdx = contentLower.indexOf(phrase);
+        if (phraseIdx >= 0) {
+          const window600 = contentLower.substring(Math.max(0, phraseIdx - 150), phraseIdx + 450);
+          let phraseScore = 10;
+          for (const kw of keywords) {
+            if (window600.includes(kw)) phraseScore += 2;
+          }
+          if (phraseScore > bestScore) {
+            bestScore = phraseScore;
+            bestPos = phraseIdx;
+          }
+        }
+      }
+    }
+
+    // PRIORITY 2: Find "artikel X" near keywords
     if (bestPos < 0 && keywords.length > 0) {
-      const artAnyRegex = /art(?:ikel)?[.s]+d+/gi;
+      const artAnyRegex = /art(?:ikel)?[.\s]+\d+/gi;
       let artMatch;
       while ((artMatch = artAnyRegex.exec(contentLower)) !== null) {
-        const window500 = contentLower.substring(Math.max(0, artMatch.index - 200), artMatch.index + 400);
+        const window600 = contentLower.substring(Math.max(0, artMatch.index - 200), artMatch.index + 400);
         let kwScore = 0;
         for (const kw of keywords) {
-          if (window500.includes(kw)) kwScore += 2;
+          if (window600.includes(kw)) kwScore += 2;
         }
         if (kwScore > bestScore) {
           bestScore = kwScore;
@@ -6701,10 +6721,8 @@ const ChatBot = {
       }
     }
 
-    // PRIORITY 3: Standard keyword-based position
-    if (bestPos < 0 || bestScore < 2) {
-      let kwBestPos = -1;
-      let kwBestScore = 0;
+    // PRIORITY 3: Standard keyword search
+    if (bestPos < 0) {
       for (const kw of keywords) {
         if (!kw || kw.length < 3) continue;
         const pos = contentLower.indexOf(kw);
@@ -6714,20 +6732,16 @@ const ChatBot = {
           for (const kw2 of keywords) {
             if (window700.includes(kw2)) score++;
           }
-          if (score > kwBestScore) {
-            kwBestScore = score;
-            kwBestPos = pos;
+          if (score > bestScore) {
+            bestScore = score;
+            bestPos = pos;
           }
         }
-      }
-      if (kwBestPos >= 0 && (bestPos < 0 || kwBestScore > bestScore)) {
-        bestPos = kwBestPos;
       }
     }
 
     if (bestPos < 0) return content.substring(0, 800);
 
-    // Larger window for legal context: 300 chars before, 900 after
     const start = Math.max(0, bestPos - 300);
     const end = Math.min(content.length, bestPos + 900);
     return (start > 0 ? '...' : '') + content.substring(start, end) + (end < content.length ? '...' : '');
@@ -6784,7 +6798,7 @@ STRIKTE ANTWOORDREGELS:
 1. Geef ALLEEN antwoorden op basis van de bovenstaande documenten.
 2. Verzin NOOIT feiten, artikelen of wetsverwijzingen die niet letterlijk in de context staan.
 3. Als een concreet artikel in de context staat, MOET u dat artikel noemen met het exacte artikelnummer.
-4. Als de vraag juridisch van aard is (bevoegdheid, grondslag, procedure), gebruik dan ALTIJD deze structuur:
+4. Als de vraag juridisch van aard is (bevoegdheid, grondslag, procedure), gebruik dan ALTIJD deze vaste structuur:
 
 **Kort antwoord:** [max 2 zinnen, direct antwoord]
 
