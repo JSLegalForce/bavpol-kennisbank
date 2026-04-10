@@ -6470,7 +6470,7 @@ const ChatBot = {
 
   init() {
     // Load saved API key (session only - not persisted to disk)
-    this.apiKey = sessionStorage.getItem('bavpol_chat_key') || null;
+    this.apiKey = localStorage.getItem('bavpol_chat_key') || null;
     this.bindEvents();
     if (this.apiKey) {
       const keyInput = document.getElementById('chatbot-api-key');
@@ -6520,7 +6520,7 @@ const ChatBot = {
       return;
     }
     this.apiKey = val;
-    sessionStorage.setItem('bavpol_chat_key', val);
+    localStorage.setItem('bavpol_chat_key', val);
     keyInput.value = '••••••••••••••••' + val.slice(-4);
     this.setStatus('API-sleutel opgeslagen (geldig voor deze sessie).', 'ok');
     const input = document.getElementById('chatbot-input');
