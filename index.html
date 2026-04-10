@@ -6793,7 +6793,13 @@ const ChatBot = {
     let context = '';
     let totalChars = 0;
     
-    for (const r of results) {
+    // Wetgeving en jurisprudentie altijd eerst in de context
+    const sorted = [...results].sort((a, b) => {
+      const rank = c => c === 'wetgeving' ? 0 : c === 'jurisprudentie' ? 1 : 2;
+      return rank(a.category) - rank(b.category);
+    });
+    
+    for (const r of sorted) {
       const catLabel = r.category === 'wetgeving' ? 'WETGEVING' :
                        r.category === 'jurisprudentie' ? 'JURISPRUDENTIE' :
                        r.category === 'rapport' ? 'RAPPORT' :
@@ -6839,22 +6845,22 @@ ${context}
 STRIKTE ANTWOORDREGELS:
 1. Geef ALLEEN antwoorden op basis van de bovenstaande documenten.
 2. Verzin NOOIT feiten, artikelen of wetsverwijzingen die niet letterlijk in de context staan.
-3. Als een concreet artikel in de context staat, MOET u dat artikel noemen met het exacte artikelnummer.
-4. Als de vraag juridisch van aard is (bevoegdheid, grondslag, procedure), gebruik dan ALTIJD deze vaste structuur:
+3. ARTIKELPLICHT: Als een WETGEVING-bron in de context staat, MOET u het exacte artikelnummer en de volledige wetnaam noemen. Gebruik de tekst van dat artikel letterlijk als grondslag. Vervang dit NOOIT door een algemene samenvatting.
+4. BRONPRIORITEIT: WETGEVING-bronnen hebben altijd voorrang boven JURISPRUDENTIE, RAPPORT, LESMATERIAAL of DOCUMENT. Als er een wetgevingsbron beschikbaar is, gebruik die als primaire grondslag.
+5. Gebruik ALTIJD deze vaste structuur voor juridische vragen:
 
-**Kort antwoord:** [max 2 zinnen, direct antwoord]
+**Kort antwoord:** [max 2 zinnen, directe feitelijke beantwoording]
 
-**Wettelijke grondslag:** [artikel X van [wet], of "niet gevonden in de kennisbank"]
+**Wettelijke grondslag:** [Artikel [nummer] [Wetboek/wet], of: "Niet aangetroffen in de kennisbank"]
 
-**Toelichting:** [juridisch correcte uitleg op basis van de context, max 4 zinnen]
+**Toelichting:** [Juridisch correcte uitleg gebaseerd op de letterlijke tekst uit de context, max 4 zinnen. Citeer relevante woorden of zinsdelen uit het artikel.]
 
-**Bron:** [titel van het document + artikel indien beschikbaar]
+**Bron:** [Exacte documenttitel zoals vermeld in de context + artikelnummer indien beschikbaar]
 
-5. Als er GEEN concreet artikel beschikbaar is: zeg dat eerlijk ("Het exacte artikel is niet aangetroffen in de kennisbank").
-6. Geef GEEN vage samenvattingen als een concreet artikel beschikbaar is.
-7. Onderscheid documenttypen: wetgeving > jurisprudentie > beleidsdocument > rapport > overig.
-8. Bij wetgevingsvragen: geef altijd eerst de wettelijke grondslag, dan pas toelichting.
-9. Antwoord in het Nederlands. Wees juridisch precies.`;
+6. Als er GEEN concreet artikel is: zeg "Het exacte artikel is niet aangetroffen in de kennisbank" en geef geen artikel uit uw eigen kennis.
+7. Als meerdere bronnen relevant zijn: noem de sterkste primaire bron volledig, vermeld een tweede bron alleen compact.
+8. Geef NOOIT een vaag of algemeen antwoord als een concreet artikel beschikbaar is.
+9. Antwoord in het Nederlands. Wees juridisch precies en beknopt.`;
     }
 
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
