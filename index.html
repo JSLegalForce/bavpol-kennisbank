@@ -3954,6 +3954,8 @@ const Search = {
     if (!pool || pool.length === 0) return [];
 
     // Zorg dat chunks beschikbaar zijn voor alle docs
+    // Dynamische minimale scoredrempel: artikel=15, kort woord=10, overig=3
+    const _minScore = pq.artRef ? 15 : (pq.tokens.length === 1 && pq.tokens[0].length <= 4) ? 10 : 3;
     for (const doc of pool) {
       try {
         if (doc.searchable && doc.content && !doc.articles) LawParser.parse(doc);
@@ -4155,7 +4157,7 @@ const Search = {
           score += bestChunkScore;
           if (titleHit) score += Search.W.TITLE_AND_CONTENT;
           if (pq.isJuridisch && doc.category === 'wetgeving') score += Search.W.CATEGORY_WETGEVING;
-          if (score > 0) docScores.set(doc.id, { score, bestChunkIdx, articleMatch, titleHit });
+          if (score >= _minScore) docScores.set(doc.id, { score, bestChunkIdx, articleMatch, titleHit });
         } catch(e) {
           console.warn('[Search] Lineaire score fout:', doc.title, e.message);
         }
@@ -4173,6 +4175,12 @@ const Search = {
     }
 
     results.sort((a, b) => b.score - a.score);
+        // Artikel-query: filter op minimale drempel voor precisie
+    if (pq.artRef && results.length > 0 && results[0].score >= 50) {
+      results.splice(0, results.length, ...results.filter(r => r.score >= 30));
+    } else if (!pq.artRef && pq.tokens.length === 1 && pq.tokens[0].length <= 4 && results.length > 0 && results[0].score < 8) {
+      results.length = 0; // geen lage-kwaliteit hits voor korte tokens
+    }
     const topResults = results.slice(0, Search.TOP_K);
     QueryCache.set(cacheKey, topResults);
     return topResults;
@@ -6653,7 +6661,7 @@ const ChatBot = {
       .replace(/[^a-zA-Z0-9\u00C0-\u017E\s]/g, ' ')
       .split(/\s+/)
       .filter(w => w.length >= 3)
-      .filter(w => !['het','de','een','van','en','in','op','te','dat','is','zijn','met','voor','aan','bij','om','als','ook','maar','door','over','uit','nog'].includes(w));
+      .filter(w => !['het','de','een','van','en','in','op','te','dat','is','zijn','met','voor','aan','bij','om','als','ook','maar','door','over','uit','nog','bes'].includes(w));
   },
 
   extractSnippet(content, keywords, articleNums, rawQuestion) {
