@@ -6807,7 +6807,9 @@ const ChatBot = {
                        r.category === 'lesmateriaal' ? 'LESMATERIAAL' : 'DOCUMENT';
       const docHeader = '=== BRON [' + catLabel + ']: ' + r.title + ' ===\n';
       const snippet = r.snippet || '';
-      const entry = docHeader + snippet + '\n\n';
+      const artDetect = snippet.match(/art(?:ikel)?[.\s]*(\d+[a-z]?(?:[:\s]+lid[\s]+\d+)?)/i);
+      const artTag = (r.category === 'wetgeving' && artDetect) ? 'ARTIKEL: ' + artDetect[1].trim() + '\n' : '';
+      const entry = docHeader + artTag + snippet + '\n\n';
       
       if (totalChars + entry.length > this.maxContextChars) {
         const remaining = this.maxContextChars - totalChars - docHeader.length - 10;
@@ -6845,13 +6847,13 @@ ${context}
 STRIKTE ANTWOORDREGELS:
 1. Geef ALLEEN antwoorden op basis van de bovenstaande documenten.
 2. Verzin NOOIT feiten, artikelen of wetsverwijzingen die niet letterlijk in de context staan.
-3. ARTIKELPLICHT: Als een WETGEVING-bron in de context staat, MOET u het exacte artikelnummer en de volledige wetnaam noemen. Gebruik de tekst van dat artikel letterlijk als grondslag. Vervang dit NOOIT door een algemene samenvatting.
+3. ARTIKELPLICHT: Als een WETGEVING-bron in de context staat, MOET u het exacte artikelnummer en de volledige wetnaam noemen. Als de context een 'ARTIKEL: [nummer]' label bevat, gebruik dat nummer EXACT in de Wettelijke grondslag. Gebruik de tekst van dat artikel letterlijk als grondslag. Vervang dit NOOIT door een algemene samenvatting.
 4. BRONPRIORITEIT: WETGEVING-bronnen hebben altijd voorrang boven JURISPRUDENTIE, RAPPORT, LESMATERIAAL of DOCUMENT. Als er een wetgevingsbron beschikbaar is, gebruik die als primaire grondslag.
 5. Gebruik ALTIJD deze vaste structuur voor juridische vragen:
 
 **Kort antwoord:** [max 2 zinnen, directe feitelijke beantwoording]
 
-**Wettelijke grondslag:** [Artikel [nummer] [Wetboek/wet], of: "Niet aangetroffen in de kennisbank"]
+**Wettelijke grondslag:** [Artikel [exact nummer uit ARTIKEL-label of context] [exacte wetnaam], of: "Niet aangetroffen in de kennisbank"]
 
 **Toelichting:** [Juridisch correcte uitleg gebaseerd op de letterlijke tekst uit de context, max 4 zinnen. Citeer relevante woorden of zinsdelen uit het artikel.]
 
