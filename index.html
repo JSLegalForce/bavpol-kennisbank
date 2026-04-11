@@ -240,6 +240,41 @@ button { font-family: inherit; }
   min-height: 100px;
   vertical-align: top;
 }
+/* Clause match badges in search results */
+.clause-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 6px 0 4px 0;
+}
+.clause-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: 'DM Sans', sans-serif;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.clause-match { background:#d1fae5; color:#065f46; border:1px solid #6ee7b7; }
+.clause-miss  { background:#fee2e2; color:#991b1b; border:1px solid #fca5a5; }
+.clause-partial-header {
+  grid-column: 1 / -1;
+  padding: 6px 14px;
+  background: #fef3c7;
+  border-left: 3px solid #f59e0b;
+  font-size: 12px;
+  color: #92400e;
+  font-weight: 600;
+  border-radius: 4px;
+  margin-bottom: 4px;
+}
+
 
 .search-clear {
   position: absolute;
@@ -4868,7 +4903,85 @@ const Render = {
     }).join('');
 
     Events.bindDocCards(grid);
-  },
+  
+
+  searchResultsMulti(combined, clauses) {
+    const section = document.getElementById('search-results-section');
+    const empty   = document.getElementById('search-empty');
+    const initial = document.getElementById('search-initial');
+    const grid    = document.getElementById('search-results-grid');
+    const countEl = document.getElementById('results-count');
+    initial.style.display = 'none';
+    if (combined.length === 0) {
+      section.style.display = 'none';
+      empty.style.display = '';
+      document.getElementById('search-empty-sub').textContent =
+        'Geen resultaten gevonden voor deze combinatie van zoekregels. Probeer Slim zoeken of verwijder een zoekregel.';
+      return;
+    }
+    empty.style.display = 'none';
+    section.style.display = '';
+    const allMatchCount = combined.filter(e => e.clauseMatches.every(Boolean)).length;
+    const partialCount  = combined.length - allMatchCount;
+    countEl.innerHTML = '<strong>' + combined.length + '</strong> resultaat' + (combined.length !== 1 ? 'en' : '') +
+      ' — <strong>' + allMatchCount + '</strong> met alle zoekregels' +
+      (partialCount > 0 ? ', <strong>' + partialCount + '</strong> gedeeltelijk' : '');
+    const allTokens = clauses.flatMap(c => c.trim().toLowerCase().split(/\s+/).filter(w => w.length > 1));
+    let pastAllMatch = false;
+    grid.innerHTML = combined.map(({ doc, totalScore, snippet, articleMatch, bestChunk, clauseMatches }) => {
+      const badgeClass = Util.typeBadgeClass(doc.type);
+      const cardClass  = Util.typeCardClass(doc.type);
+      const icon       = Util.typeIcon(doc.type);
+      const catClass   = Util.catClass(doc.category);
+      const catLabel   = Util.catLabel(doc.category);
+      const isFullMatch = clauseMatches.every(Boolean);
+      let separator = '';
+      if (!isFullMatch && !pastAllMatch) {
+        pastAllMatch = true;
+        separator = allMatchCount > 0
+          ? '<div class="clause-partial-header">⚠ Gedeeltelijke matches — niet alle zoekregels gevonden</div>'
+          : '';
+      }
+      const snippetHL = Render.highlightWords(Util.esc(snippet || doc.contentPreview || ''), allTokens);
+      const titleHL   = Render.highlightWords(Util.esc(doc.title), allTokens);
+      const artHintBadge = articleMatch
+        ? '<span class="art-hint-badge">📌 ' + Util.esc(articleMatch.title) + ' gevonden in dit document</span>'
+        : '';
+      const chunkHeading = (bestChunk && bestChunk.artHint && bestChunk.heading !== doc.title)
+        ? '<span class="chunk-hint">📍 Meest relevante sectie: <em>' + Util.esc(bestChunk.artHint) + '</em></span>'
+        : '';
+      const _warnN = (doc.parseWarning || []).length;
+      const warnBadge = _warnN > 0
+        ? '<span class="parse-warn-badge" title="' + _warnN + ' artikel(en) met mogelijke parseerfouten">⚠ ' + _warnN + '</span>'
+        : '';
+      const clauseBadgesHtml = '<div class="clause-badges">' +
+        clauses.map((c, i) => {
+          const m = clauseMatches[i];
+          return '<span class="clause-badge ' + (m ? 'clause-match' : 'clause-miss') + '">' +
+            (m ? '✔' : '✖') + ' ' + Util.esc(c) + '</span>';
+        }).join('') + '</div>';
+      return separator +
+        '<div class="doc-card ' + cardClass + '" data-docid="' + Util.esc(doc.id) + '" role="article" tabindex="0">' +
+          '<div class="doc-card-header">' +
+            '<div class="doc-card-badges">' +
+              '<span class="doc-type-badge badge-' + badgeClass + '">' + icon + ' ' + doc.type.toUpperCase() + '</span>' +
+              artHintBadge +
+            '</div>' +
+            '<span class="cat-badge ' + catClass + '">' + catLabel + '</span>' +
+            warnBadge +
+          '</div>' +
+          clauseBadgesHtml +
+          '<h3 class="doc-card-title">' + titleHL + '</h3>' +
+          (chunkHeading || '') +
+          '<p class="doc-card-desc">' + snippetHL + '</p>' +
+          '<div class="doc-card-footer">' +
+            '<span class="doc-date">' + Util.formatDate(doc.uploadedAt) + '</span>' +
+            '<span class="doc-size">' + Util.formatSize(doc.size) + '</span>' +
+          '</div>' +
+        '</div>';
+    }).join('');
+    Events.bindDocCards(grid);
+  },},
 
   highlightWords(text, words) {
     let result = text;
@@ -5982,6 +6095,52 @@ const Events = {
       }, 180); // 180ms debounce
     }
 
+    // Multi-clause search: each non-empty line = separate clause
+    function _runSearchMulti(clauses) {
+      if (_searchTimer) clearTimeout(_searchTimer);
+      _searchTimer = setTimeout(() => {
+        if (_searchRunning) return;
+        _searchRunning = true;
+        try {
+          const filter = State.searchFilter;
+          const clauseResults = clauses.map(c => ({
+            clause: c,
+            results: Search.query(c.trim(), filter)
+          }));
+          const docMap = new Map();
+          clauseResults.forEach(({ results }, ci) => {
+            results.forEach(({ doc, score, snippet, articleMatch, bestChunk }) => {
+              const key = doc.id;
+              if (!docMap.has(key)) {
+                docMap.set(key, {
+                  doc, totalScore: 0, snippet, articleMatch, bestChunk,
+                  clauseMatches: new Array(clauses.length).fill(false)
+                });
+              }
+              const entry = docMap.get(key);
+              const weight = ci === 0 ? 1.5 : 1.0;
+              entry.totalScore += score * weight;
+              entry.clauseMatches[ci] = true;
+              if (!entry.snippet && snippet) entry.snippet = snippet;
+              if (!entry.bestChunk && bestChunk) entry.bestChunk = bestChunk;
+              if (!entry.articleMatch && articleMatch) entry.articleMatch = articleMatch;
+            });
+          });
+          const allMatch = [], partialMatch = [];
+          docMap.forEach(entry => {
+            if (entry.clauseMatches.every(Boolean)) allMatch.push(entry);
+            else partialMatch.push(entry);
+          });
+          allMatch.sort((a, b) => b.totalScore - a.totalScore);
+          partialMatch.sort((a, b) => b.totalScore - a.totalScore);
+          const combined = [...allMatch, ...partialMatch];
+          Render.searchResultsMulti(combined, clauses);
+        } finally {
+          _searchRunning = false;
+        }
+      }, 180);
+    }
+
     mainSearch.addEventListener('input', () => {
       const q = mainSearch.value;
       searchClear.classList.toggle('visible', q.length > 0);
@@ -6005,17 +6164,25 @@ const Events = {
     // Search view
     const searchView = document.getElementById('searchView');
     searchView.addEventListener('input', () => {
-      const q = searchView.value.split('\n').map(l=>l.trim()).filter(l=>l).join(' ');
-      mainSearch.value = q;
-      document.getElementById('searchClear').classList.toggle('visible', q.length > 0);
-      if (q.trim().length > 0) {
-        _runSearch(q.trim(), 'search-view');
-      } else {
-        SearchContext.reset();
+      const clauses = searchView.value.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+      mainSearch.value = clauses.join(' ');
+      document.getElementById('searchClear').classList.toggle('visible', clauses.length > 0);
+      if (clauses.length === 0) {
         if (_searchTimer) clearTimeout(_searchTimer);
-        document.getElementById('search-results-section').style.display = 'none';
-        document.getElementById('search-empty').style.display = 'none';
-        document.getElementById('search-initial').style.display = '';
+        SearchContext.reset();
+        Render.searchResults([], '');
+        return;
+      }
+      if (clauses.length === 1) {
+        _runSearch(clauses[0], 'search-view');
+      } else {
+        _runSearchMulti(clauses);
+      }
+    });
+    searchView.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && e.ctrlKey) {
+        e.preventDefault();
+        searchView.dispatchEvent(new Event('input'));
       }
     });
 
