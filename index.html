@@ -4999,7 +4999,7 @@ const Render = {
         '</div>';
     }).join('');
     Events.bindDocCards(grid);
-  }
+  },
 
   searchResultsMultiImproved(combined, clauses) {
     const section=document.getElementById('search-results-section'),empty=document.getElementById('search-empty'),initial=document.getElementById('search-initial'),grid=document.getElementById('search-results-grid'),countEl=document.getElementById('results-count');
@@ -5019,7 +5019,7 @@ const Render = {
       return separator+'<div class="doc-card '+cardClass+' '+matchClass+'" data-docid="'+Util.esc(doc.id)+'"'+(articleMatch?' data-artid="'+Util.esc(articleMatch.id)+'"':'')+' role="article" tabindex="0"><div class="doc-card-header"><div class="doc-card-badges"><span class="doc-type-badge badge-'+badgeClass+'">'+icon+' '+doc.type.toUpperCase()+'</span>'+artHint+'</div><span class="cat-tag '+catClass+'">'+catLabel+'</span></div>'+clauseBadgesHtml+'<div class="doc-card-title">'+titleHL+'</div><div class="doc-card-preview">'+snippetHL+'</div><div class="doc-card-footer"><span class="doc-date">'+Util.formatDate(doc.uploadedAt)+'</span><span class="doc-size">'+Util.formatSize(doc.size)+'</span></div></div>';
     }).join('');
     Events.bindDocCards(grid);
-  },,
+  },
 
   highlightWords(text, words) {
     let result = text;
