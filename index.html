@@ -5007,7 +5007,7 @@ const Render = {
     if(combined.length===0){section.style.display='none';empty.style.display='';const sub=document.getElementById('search-empty-sub');if(sub)sub.textContent='Geen resultaten. Probeer OF in plaats van EN of gebruik minder zoekregels.';return;}
     empty.style.display='none';section.style.display='';
     const allMatchCount=combined.filter(e=>e.rowMatches.every(Boolean)).length,partialCount=combined.length-allMatchCount;
-    countEl.innerHTML='<strong>'+combined.length+'</strong> resultaat'+(combined.length!==1?'en':'')+(allMatchCount>0?' — <span style="color:#065f46;font-weight:600;">✔ '+allMatchCount+' volledig</span>':'')+(partialCount>0?' <span style="color:#9a3412;font-weight:600;">◑ '+partialCount+' gedeeltelijk</span>':'');
+    countEl.innerHTML='<strong>'+combined.length+'</strong> result'+(combined.length!==1?'aten':'aat')+(allMatchCount>0?' — <span style="color:#065f46;font-weight:600;">✔ '+allMatchCount+' volledig</span>':'')+(partialCount>0?' <span style="color:#9a3412;font-weight:600;">◑ '+partialCount+' gedeeltelijk</span>':'');
     const allTokens=clauses.flatMap(c=>c.trim().toLowerCase().split(/\s+/).filter(w=>w.length>1));
     let pastAllMatch=false;
     grid.innerHTML=combined.map(({doc,totalScore,snippet,articleMatch,bestChunk,rowMatches})=>{
@@ -5019,6 +5019,7 @@ const Render = {
       return separator+'<div class="doc-card '+cardClass+' '+matchClass+'" data-docid="'+Util.esc(doc.id)+'"'+(articleMatch?' data-artid="'+Util.esc(articleMatch.id)+'"':'')+' role="article" tabindex="0"><div class="doc-card-header"><div class="doc-card-badges"><span class="doc-type-badge badge-'+badgeClass+'">'+icon+' '+doc.type.toUpperCase()+'</span>'+artHint+'</div><span class="cat-tag '+catClass+'">'+catLabel+'</span></div>'+clauseBadgesHtml+'<div class="doc-card-title">'+titleHL+'</div><div class="doc-card-preview">'+snippetHL+'</div><div class="doc-card-footer"><span class="doc-date">'+Util.formatDate(doc.uploadedAt)+'</span><span class="doc-size">'+Util.formatSize(doc.size)+'</span></div></div>';
     }).join('');
     Events.bindDocCards(grid);
+    setTimeout(()=>{const s=document.getElementById('search-results-section');if(s)s.scrollIntoView({behavior:'smooth',block:'start'});},100);
   },
 
   highlightWords(text, words) {
