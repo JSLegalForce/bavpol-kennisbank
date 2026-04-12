@@ -1998,7 +1998,10 @@ mark.highlight {
             </div>
           </div>
           <textarea id="searchView" rows="1" aria-hidden="true" style="display:none;" autocomplete="off"></textarea>
-          <div class="filter-bar" style="justify-content:center;" role="group" aria-label="Zoekfilters">
+        <div id="search-results-section" style="display:none;" aria-live="polite"><div class="search-results-header"><div class="results-count" id="results-count" role="status"></div></div><div id="search-results-grid" class="doc-grid"></div></div>
+        <div id="search-empty" class="empty-state" style="display:none;" role="status"><div class="empty-icon">🔍</div><div class="empty-title">Geen resultaten gevonden</div><div class="empty-sub" id="search-empty-sub">Probeer andere zoektermen of pas de operatoren aan.</div></div>
+        <div id="search-initial" class="empty-state" style="background:transparent;border-style:dashed;" role="status"><div class="empty-icon">📋</div><div class="empty-title">Begin met zoeken</div><div class="empty-sub">Vul een of meer zoekregels in en klik op Zoeken.<br>Combineer met EN, OF of NIET voor gerichte resultaten.</div></div>
+          <div class="filter-bar" style="justify-content:center;margin-bottom:0;" role="group" aria-label="Zoekfilters">
             <button class="filter-chip active" data-sfilter="alle">Alle</button>
             <button class="filter-chip" data-sfilter="wetgeving">⚖️ Wetgeving</button>
             <button class="filter-chip" data-sfilter="powerpoint">📊 PowerPoints</button>
@@ -2007,9 +2010,6 @@ mark.highlight {
             <button class="filter-chip" data-sfilter="beleid">📄 Beleid</button>
             <button class="filter-chip" data-sfilter="overig">📁 Overig</button>
           </div>
-        <div id="search-results-section" style="display:none;" aria-live="polite"><div class="search-results-header"><div class="results-count" id="results-count" role="status"></div></div><div id="search-results-grid" class="doc-grid"></div></div>
-        <div id="search-empty" class="empty-state" style="display:none;" role="status"><div class="empty-icon">🔍</div><div class="empty-title">Geen resultaten gevonden</div><div class="empty-sub" id="search-empty-sub">Probeer andere zoektermen of pas de operatoren aan.</div></div>
-        <div id="search-initial" class="empty-state" style="background:transparent;border-style:dashed;" role="status"><div class="empty-icon">📋</div><div class="empty-title">Begin met zoeken</div><div class="empty-sub">Vul een of meer zoekregels in en klik op Zoeken.<br>Combineer met EN, OF of NIET voor gerichte resultaten.</div></div>
         </div>
       </div>
       <!-- ====== CHATBOT VIEW ====== -->
